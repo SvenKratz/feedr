@@ -30,6 +30,20 @@ enum Commands {
     },
     /// Start the background service without opening a window.
     Start,
+    /// Stop the local service after its current requests finish.
+    Stop,
+    /// Fetch the latest GitHub release and notes without opening a window.
+    UpdateCheck,
+    #[command(hide = true)]
+    UpdateApply {
+        #[arg(long)]
+        plan: PathBuf,
+    },
+    #[command(hide = true)]
+    UpdateVerify {
+        #[arg(long)]
+        archive: PathBuf,
+    },
     /// Open the desktop feed (also the default command).
     Gui,
     /// Run the local background service in the foreground.
@@ -303,6 +317,16 @@ fn main() -> Result<()> {
     if let Some(Commands::MediaCheck { resource }) = &cli.command {
         return media_check(resource);
     }
+    if let Some(Commands::UpdateApply { plan }) = &cli.command {
+        return feedr::update::apply(plan);
+    }
+    if let Some(Commands::UpdateVerify { archive }) = &cli.command {
+        feedr::update::verify_package(archive)?;
+        return print(json!({"verified":true}));
+    }
+    if matches!(cli.command, Some(Commands::UpdateCheck)) {
+        return print(feedr::update::Github::new()?.latest()?);
+    }
     let paths = Paths::new(cli.data_dir)?;
     if matches!(cli.command, Some(Commands::Serve)) {
         return broker::serve(paths);
@@ -321,11 +345,18 @@ fn main() -> Result<()> {
         );
     }
     let client = Client::new(paths.clone());
+    if matches!(cli.command, Some(Commands::Stop)) {
+        return print(client.call::<Value>("shutdown", json!({}))?);
+    }
     client.ensure_running()?;
     match cli.command.unwrap_or(Commands::Gui) {
         Commands::Discovery { command } => discovery_command(&client, command),
         Commands::Start => print(client.call::<Value>("ping", json!({}))?),
-        Commands::MediaCheck { .. } => unreachable!(),
+        Commands::MediaCheck { .. }
+        | Commands::UpdateCheck
+        | Commands::UpdateApply { .. }
+        | Commands::UpdateVerify { .. }
+        | Commands::Stop => unreachable!(),
         Commands::Gui => ui::run(client),
         Commands::Post {
             title,

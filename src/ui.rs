@@ -23,6 +23,8 @@ use feed_columns::{Feed, Layout as ColumnLayout, Target as FeedTarget};
 mod media;
 mod session_color;
 mod session_list;
+mod updates;
+mod viewer_header;
 
 const INK: Color32 = Color32::from_rgb(217, 229, 238);
 const MUTED: Color32 = Color32::from_rgb(144, 164, 181);
@@ -64,6 +66,7 @@ pub fn run(client: Client) -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
 struct App {
+    updates: updates::Updates,
     artifacts: artifact::Artifacts,
     hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     snapshot: Snapshot,
@@ -104,6 +107,15 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, client: Client) -> Self {
         let ctx = &cc.egui_ctx;
         egui_extras::install_image_loaders(ctx);
+        let updates = updates::Updates::new(
+            client.paths.root.clone(),
+            cc.storage
+                .and_then(|s| eframe::get_value(s, "feedr.auto_updates"))
+                .unwrap_or(true),
+            cc.storage
+                .and_then(|s| eframe::get_value(s, "feedr.next_update_check"))
+                .unwrap_or(0),
+        );
         let render_markdown = cc
             .storage
             .and_then(|storage| eframe::get_value(storage, "feedr.render_markdown"))
@@ -255,6 +267,7 @@ impl App {
             }
         });
         Self {
+            updates,
             artifacts: artifact::Artifacts::new(),
             hotkey,
             snapshot: Snapshot::default(),
@@ -541,6 +554,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().button_padding = egui::vec2(8., 3.);
                     ui.label(RichText::new("feedr").size(22.).strong().color(BLUE));
+                    self.updates.button(ui);
                     let search_width = (ui.available_width() - 420.).clamp(120., 360.);
                     let search = ui.add(
                         egui::TextEdit::singleline(&mut self.query.search)
@@ -1444,23 +1458,6 @@ impl App {
                             .truncate(),
                     );
                 });
-                if resource.file_type() == "Image" {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Zoom");
-                        ui.add(
-                            egui::Slider::new(&mut self.expanded_zoom, 0.25..=8.).logarithmic(true),
-                        );
-                        if ui.small_button("Fit").clicked() {
-                            self.expanded_zoom = 1.;
-                        }
-                        if ui
-                            .checkbox(&mut self.full_resolution, "Load full resolution")
-                            .changed()
-                        {
-                            self.preview_key.clear();
-                        }
-                    });
-                }
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(PAPER).inner_margin(12))
@@ -1475,14 +1472,17 @@ impl App {
                     match &self.preview {
                         Some(Preview::Image(_)) => {
                             if let Some(texture) = &self.texture {
-                                let response = media::image_canvas(
+                                let (response, full_resolution_changed) = media::image_preview(
                                     ui,
                                     texture,
-                                    self.expanded_zoom,
+                                    &mut self.expanded_zoom,
+                                    &mut self.full_resolution,
                                     (&post.id, &resource.target),
                                     true,
-                                    true,
                                 );
+                                if full_resolution_changed {
+                                    self.preview_key.clear();
+                                }
                                 if response.double_clicked() {
                                     self.expanded_preview = false;
                                 }
@@ -1520,59 +1520,41 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .inner_margin(20)
+                    .inner_margin(12)
                     .stroke(egui::Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Viewer").color(MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            self.selected = None;
-                            self.media = None;
-                            self.media_key.clear();
-                        }
-                        if matches!(r.file_type(), "Image" | "Video")
-                            && ui
-                                .button("Expand")
-                                .on_hover_text("Fill the Feedr window")
-                                .clicked()
-                        {
-                            self.toggle_expanded_preview();
-                            ctx.request_repaint();
-                        }
-                    });
-                });
-                ui.add_space(10.);
-                ui.heading(&p.title);
-                ui.label(
-                    RichText::new(&p.context.label)
-                        .color(session_color::resolve(&p.session_id, &self.session_colors).accent),
-                );
-                if p.resources.len() > 1 {
-                    egui::ComboBox::from_id_salt("attachment")
-                        .selected_text(&r.name)
-                        .show_ui(ui, |ui| {
-                            for (i, r) in p.resources.iter().enumerate() {
-                                ui.selectable_value(&mut self.resource, i, &r.name);
-                            }
-                        });
+                let actions = viewer_header::Header {
+                    post: &p,
+                    resource: &r,
+                    index: self.resource,
+                    accent: session_color::resolve(&p.session_id, &self.session_colors).accent,
+                    render_markdown: &mut self.render_markdown,
+                    source: match &self.preview {
+                        Some(Preview::Text(text)) => Some(text),
+                        _ => None,
+                    },
                 }
-                ui.add_space(8.);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Open externally").clicked() {
-                        self.action(&p, &r, false);
-                    }
-                    if r.kind != ResourceKind::Url && ui.button("Show in folder").clicked() {
-                        self.action(&p, &r, true);
-                    }
-                    if ui.button("Copy location").clicked() {
-                        ctx.copy_text(r.target.clone());
-                    }
-                });
-                ui.add_space(8.);
-                ui.label(RichText::new(&r.target).size(11.).color(MUTED));
-                ui.separator();
+                .show(ui);
+                if actions.close {
+                    self.dismiss_preview();
+                    return;
+                }
+                if let Some(index) = actions.attachment {
+                    self.select_resource(&p, index);
+                    ctx.request_repaint();
+                    return;
+                }
+                if actions.expand {
+                    self.toggle_expanded_preview();
+                    ctx.request_repaint();
+                }
+                if actions.open {
+                    self.action(&p, &r, false);
+                }
+                if actions.reveal {
+                    self.action(&p, &r, true);
+                }
                 if native_media {
                     if let Some(viewer) = &mut self.media
                         && viewer.show(ui)
@@ -1582,16 +1564,26 @@ impl App {
                     }
                     return;
                 }
-                if r.file_type() == "Markdown" {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.render_markdown, "Render Markdown");
-                        if let Some(Preview::Text(text)) = &self.preview
-                            && quiet_button(ui, "Copy source").clicked()
-                        {
-                            ctx.copy_text(text.clone());
+                if matches!(self.preview, Some(Preview::Image(_))) {
+                    if let Some(texture) = &self.texture {
+                        let (response, full_resolution_changed) = media::image_preview(
+                            ui,
+                            texture,
+                            &mut self.zoom,
+                            &mut self.full_resolution,
+                            (&p.id, &r.target),
+                            false,
+                        );
+                        if full_resolution_changed {
+                            self.preview_key.clear();
+                            ctx.request_repaint();
                         }
-                    });
-                    ui.separator();
+                        if response.double_clicked() {
+                            self.toggle_expanded_preview();
+                            ctx.request_repaint();
+                        }
+                    }
+                    return;
                 }
                 egui::ScrollArea::both()
                     .id_salt(("preview_scroll", &p.id, &r.target, self.render_markdown))
@@ -1609,40 +1601,7 @@ impl App {
                                 ui.add(egui::Label::new(RichText::new(text).monospace()).wrap());
                             }
                         }
-                        Some(Preview::Image(_)) => {
-                            if let Some(texture) = &self.texture {
-                                ui.horizontal(|ui| {
-                                    ui.label("Zoom");
-                                    ui.add(
-                                        egui::Slider::new(&mut self.zoom, 0.25..=3.)
-                                            .logarithmic(true),
-                                    );
-                                    if ui.small_button("Fit").clicked() {
-                                        self.zoom = 1.;
-                                    }
-                                });
-                                if ui
-                                    .checkbox(&mut self.full_resolution, "Load full resolution")
-                                    .changed()
-                                {
-                                    self.preview_key.clear();
-                                    ui.ctx().request_repaint();
-                                }
-                                if media::image_canvas(
-                                    ui,
-                                    texture,
-                                    self.zoom,
-                                    (&p.id, &r.target),
-                                    false,
-                                    true,
-                                )
-                                .double_clicked()
-                                {
-                                    self.toggle_expanded_preview();
-                                    ctx.request_repaint();
-                                }
-                            }
-                        }
+                        Some(Preview::Image(_)) => {}
                         Some(Preview::Unsupported(message)) => {
                             ui.add_space(22.);
                             ui.label(RichText::new(r.file_type()).size(30.).strong());
@@ -1658,6 +1617,8 @@ impl App {
 }
 impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "feedr.auto_updates", &self.updates.automatic);
+        eframe::set_value(storage, "feedr.next_update_check", &self.updates.next_check);
         eframe::set_value(storage, "feedr.render_markdown", &self.render_markdown);
         eframe::set_value(storage, "feedr.session_colors", &self.session_colors);
         eframe::set_value(storage, "feedr.session_view", &self.session_view);
@@ -1669,6 +1630,9 @@ impl eframe::App for App {
         );
     }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.updates.poll(ctx) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         ctx.request_repaint_after(Duration::from_secs(1));
         self.artifacts.receive(ctx);
         // Receive decoded images and upload textures on the GUI thread only.
@@ -1726,6 +1690,7 @@ impl eframe::App for App {
             self.detail(ctx);
             self.feed(ctx);
         }
+        self.updates.show(ctx);
         let summon_enabled = self.hotkey.is_some();
         if self.show_help && !self.expanded_preview {
             egui::Window::new("Publishing to Feedr").open(&mut self.show_help).default_width(570.).show(ctx,|ui|{
@@ -1970,14 +1935,6 @@ fn line_action(
     });
     response
 }
-fn quiet_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).size(11.).color(MUTED))
-            .small()
-            .frame(false),
-    )
-}
-
 fn opens_in_sidebar(resource: &Resource) -> bool {
     matches!(resource.file_type(), "Image" | "Markdown" | "PDF" | "Video")
 }
@@ -1990,6 +1947,11 @@ mod tests {
         let (commands, _) = mpsc::channel();
         let (_, events) = mpsc::channel();
         App {
+            updates: updates::Updates::new(
+                std::env::temp_dir().join("feedr-test-unused"),
+                false,
+                0,
+            ),
             artifacts: artifact::Artifacts::new(),
             hotkey: None,
             snapshot: Snapshot::default(),

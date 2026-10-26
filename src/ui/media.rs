@@ -410,7 +410,7 @@ pub(super) fn image_canvas(
 ) -> egui::Response {
     let size = egui::vec2(
         ui.available_width(),
-        if expanded {
+        if expanded || expandable {
             ui.available_height().max(1.)
         } else {
             ui.available_height().clamp(180., 620.)
@@ -465,9 +465,204 @@ pub(super) fn image_canvas(
     })
 }
 
+pub(super) fn image_preview(
+    ui: &mut egui::Ui,
+    texture: &egui::TextureHandle,
+    zoom: &mut f32,
+    full_resolution: &mut bool,
+    id: impl std::hash::Hash,
+    expanded: bool,
+) -> (egui::Response, bool) {
+    let size = egui::vec2(ui.available_width(), (ui.available_height() - 40.).max(1.));
+    let response = ui
+        .allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+            image_canvas(ui, texture, *zoom, id, expanded, true)
+        })
+        .inner;
+    let mut changed = false;
+    let mut font = egui::TextStyle::Body.resolve(ui.style());
+    font.size = 11.;
+    let label_width = ui.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap("Full res".into(), font, super::INK)
+            .size()
+            .x
+    });
+    let toolbar_width = 8. + 26. + 44. + 26. + 12. + 5. + 14. + 4. + label_width;
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - toolbar_width) * 0.5).max(0.));
+        let toolbar = egui::Frame::new()
+            .fill(super::PAPER)
+            .corner_radius(5)
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4., 0.);
+                ui.spacing_mut().button_padding = egui::vec2(4., 3.);
+                ui.spacing_mut().icon_width = 14.;
+                ui.spacing_mut().icon_spacing = 4.;
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(*zoom > 0.25, |ui| {
+                        if super::viewer_header::icon_button(
+                            ui,
+                            super::viewer_header::Icon::Minus,
+                            "Zoom out",
+                        )
+                        .clicked()
+                        {
+                            *zoom = (*zoom / 1.25).max(0.25);
+                        }
+                    });
+                    let label = if (*zoom - 1.).abs() < 0.005 {
+                        "Fit".into()
+                    } else {
+                        format!("{:.0}%", *zoom * 100.)
+                    };
+                    let fit = ui.add_sized(
+                        [44., 26.],
+                        egui::Button::new(egui::RichText::new(label).size(11.)).frame(false),
+                    );
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new(("viewer-control", "Fit image")), fit.rect)
+                    });
+                    fit.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            ui.is_enabled(),
+                            "Fit image",
+                        )
+                    });
+                    if fit
+                        .on_hover_text("Fit image; percentages are relative to fit")
+                        .clicked()
+                    {
+                        *zoom = 1.;
+                    }
+                    ui.add_enabled_ui(*zoom < 8., |ui| {
+                        if super::viewer_header::icon_button(
+                            ui,
+                            super::viewer_header::Icon::Plus,
+                            "Zoom in",
+                        )
+                        .clicked()
+                        {
+                            *zoom = (*zoom * 1.25).min(8.);
+                        }
+                    });
+                    ui.add_space(5.);
+                    let full_res = ui
+                        .checkbox(full_resolution, egui::RichText::new("Full res").size(11.))
+                        .on_hover_text("Load full resolution");
+                    changed = full_res.changed();
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("viewer-control", "Full res")),
+                            full_res.rect,
+                        )
+                    });
+                });
+            });
+        #[cfg(test)]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(("image-toolbar", expanded)),
+                toolbar.response.rect,
+            )
+        });
+        #[cfg(not(test))]
+        let _ = toolbar;
+    });
+    (response, changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SurfaceAction, SurfaceClicks};
+    #[test]
+    fn image_footer_stays_below_the_canvas_and_zoom_and_full_resolution_are_direct_controls() {
+        use eframe::egui::{self, Pos2, Rect, Vec2};
+        let ctx = egui::Context::default();
+        let texture = ctx.load_texture(
+            "footer-test",
+            egui::ColorImage::filled([64, 32], super::super::BLUE),
+            egui::TextureOptions::LINEAR,
+        );
+        let mut zoom = 1.;
+        let mut full = false;
+        let draw = |zoom: &mut f32, full: &mut bool, time, events, expanded| {
+            let mut changed = false;
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    events,
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(300., 400.))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let (_, full_changed) =
+                                super::image_preview(ui, &texture, zoom, full, "image", expanded);
+                            changed = full_changed;
+                            assert!(
+                                ui.min_rect().right() <= 300.1 && ui.min_rect().bottom() <= 400.1,
+                                "{:?}",
+                                ui.min_rect()
+                            );
+                        });
+                },
+            );
+            changed
+        };
+        let rect = |label| {
+            ctx.data(|data| {
+                data.get_temp::<Rect>(egui::Id::new(("viewer-control", label)))
+                    .unwrap()
+            })
+        };
+        let click = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    pressed,
+                    button: egui::PointerButton::Primary,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        draw(&mut zoom, &mut full, 0., vec![], false);
+        let image = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new(("image-preview-rect", false)))
+                .unwrap()
+        });
+        assert!(rect("Zoom in").top() >= image.bottom());
+        let toolbar = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new(("image-toolbar", false)))
+                .unwrap()
+        });
+        assert!((toolbar.center().x - 150.).abs() < 1., "{toolbar:?}");
+        let pos = rect("Zoom in").center();
+        draw(&mut zoom, &mut full, 0.1, click(pos, true), false);
+        draw(&mut zoom, &mut full, 0.2, click(pos, false), false);
+        assert_eq!(zoom, 1.25);
+        let pos = rect("Fit image").center();
+        draw(&mut zoom, &mut full, 0.3, click(pos, true), false);
+        draw(&mut zoom, &mut full, 0.4, click(pos, false), false);
+        assert_eq!(zoom, 1.);
+        let pos = rect("Full res").center();
+        draw(&mut zoom, &mut full, 0.5, click(pos, true), false);
+        assert!(draw(&mut zoom, &mut full, 0.6, click(pos, false), false));
+        assert!(full);
+        draw(&mut zoom, &mut full, 0.7, vec![], true);
+        let image = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new(("image-preview-rect", true)))
+                .unwrap()
+        });
+        assert!(rect("Zoom in").top() >= image.bottom());
+    }
 
     #[test]
     fn video_double_click_expands_without_toggling_playback() {

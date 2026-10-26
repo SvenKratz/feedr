@@ -16,7 +16,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -119,8 +119,12 @@ pub fn serve(paths: Paths) -> Result<()> {
     herdr::start(state.clone(), paths.root.clone());
     crate::discovery::start(state.clone());
     let clients = Arc::new(AtomicUsize::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
     eprintln!("Feedr broker listening on {}", paths.socket.display());
     for stream in listener.incoming() {
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
         let stream = match stream {
             Ok(s) => s,
             Err(e) => {
@@ -134,18 +138,32 @@ pub fn serve(paths: Paths) -> Result<()> {
         }
         let state = state.clone();
         let clients = clients.clone();
+        let stopping = stopping.clone();
+        let wake_socket = paths.socket.clone();
         thread::spawn(move || {
-            if let Err(e) = handle(stream, state) {
-                eprintln!("Client: {e:#}");
+            match handle(stream, state) {
+                Ok(true) => {
+                    stopping.store(true, Ordering::Release);
+                    // Wake blocking accept without adding an idle polling timer.
+                    let _ = UnixStream::connect(wake_socket);
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("Client: {e:#}"),
             }
             clients.fetch_sub(1, Ordering::SeqCst);
         });
     }
+    // Let acknowledged requests finish before releasing the single-broker lock.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while clients.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
     Ok(())
 }
-fn handle(mut stream: UnixStream, shared: Shared) -> Result<()> {
+fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
     stream.set_read_timeout(Some(Duration::from_secs(8)))?;
     stream.set_write_timeout(Some(Duration::from_secs(8)))?;
+    let mut shutdown = false;
     let result = (|| -> Result<Value> {
         let request: Request = serde_json::from_str(&bounded_line(stream.try_clone()?)?)?;
         ensure!(request.version == 1, "Unsupported Feedr protocol version");
@@ -177,6 +195,10 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<()> {
             return Ok(json!({"sequence":state.store.sequence()?}));
         }
         let result = match request.method.as_str() {
+            "shutdown" => {
+                shutdown = true;
+                json!({"stopping":true})
+            }
             "discovery.config" => serde_json::to_value(state.store.discovery_config()?)?,
             "discovery.configure" => {
                 let config = serde_json::from_value(request.params)?;
@@ -246,7 +268,7 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<()> {
     };
     serde_json::to_writer(&mut stream, &reply)?;
     stream.write_all(b"\n")?;
-    Ok(())
+    Ok(shutdown)
 }
 
 #[derive(Clone)]
@@ -284,6 +306,7 @@ impl Client {
         Ok(serde_json::from_value(reply.result)?)
     }
     pub fn ensure_running(&self) -> Result<()> {
+        let _update_guard = installation_lock(&self.paths, false)?;
         if self.call::<Value>("ping", json!({})).is_ok() {
             return Ok(());
         }
@@ -292,7 +315,7 @@ impl Client {
             .create(true)
             .append(true)
             .open(self.paths.root.join("broker.log"))?;
-        Command::new(std::env::current_exe()?)
+        Command::new(self.service_executable()?)
             .process_group(0)
             .arg("--data-dir")
             .arg(&self.paths.root)
@@ -313,8 +336,54 @@ impl Client {
             self.paths.root.join("broker.log").display()
         )
     }
+    fn service_executable(&self) -> Result<PathBuf> {
+        let preferred = fs::read(self.paths.root.join("updates/executable.json"))
+            .ok()
+            .filter(|bytes| bytes.len() < 64 * 1024)
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if let Some(record) = preferred
+            && let (Some(path), Some(version)) =
+                (record["path"].as_str(), record["version"].as_str())
+            && let Ok(version) = semver::Version::parse(version)
+            && version >= semver::Version::parse(env!("CARGO_PKG_VERSION"))?
+            && Path::new(path).is_absolute()
+            && Path::new(path).is_file()
+        {
+            return Ok(path.into());
+        }
+        Ok(std::env::current_exe()?)
+    }
     pub fn snapshot(&self, q: &FeedQuery) -> Result<Snapshot> {
         self.call("snapshot", serde_json::to_value(q)?)
+    }
+}
+
+pub(crate) fn installation_lock(paths: &Paths, exclusive: bool) -> Result<fs::File> {
+    paths.prepare()?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(paths.root.join("update.lock"))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let result = if exclusive {
+            fs2::FileExt::try_lock_exclusive(&file)
+        } else {
+            fs2::FileExt::try_lock_shared(&file)
+        };
+        match result {
+            Ok(()) => return Ok(file),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                ensure!(
+                    Instant::now() < deadline,
+                    "Feedr is installing an update; try again shortly"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 
@@ -335,4 +404,46 @@ pub fn add_socket(paths: &Paths, socket: &Path) -> Result<()> {
     fs::write(&tmp, serde_json::to_vec_pretty(&sockets)?)?;
     fs::rename(tmp, file)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    #[test]
+    fn installation_excludes_service_startups_and_keeps_the_installed_executable_preferred() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(root.path().into())).unwrap();
+        let reader = installation_lock(&paths, false).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let other = paths.clone();
+        let worker = thread::spawn(move || {
+            let guard = installation_lock(&other, true).unwrap();
+            tx.send(()).unwrap();
+            drop(guard);
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(80)).is_err());
+        drop(reader);
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        fs::create_dir(root.path().join("updates")).unwrap();
+        let preferred = root.path().join("installed-feedr");
+        fs::write(&preferred, b"executable fixture").unwrap();
+        let config = root.path().join("updates/executable.json");
+        fs::write(
+            &config,
+            json!({"path":preferred,"version":"999.0.0"}).to_string(),
+        )
+        .unwrap();
+        let client = Client::new(paths);
+        assert_eq!(client.service_executable().unwrap(), preferred);
+        fs::write(
+            &config,
+            json!({"path":preferred,"version":"0.0.0"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            client.service_executable().unwrap(),
+            std::env::current_exe().unwrap()
+        );
+    }
 }

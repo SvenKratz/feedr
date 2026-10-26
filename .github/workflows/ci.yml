@@ -1,10 +1,14 @@
 name: Rust checks
 on: [push, pull_request]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   checks:
+    timeout-minutes: 30
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -14,7 +18,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux native dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev libegl1-mesa-dev libwayland-dev poppler-utils libmpv2 ffmpeg
+        run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update && sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev libegl1-mesa-dev libwayland-dev poppler-utils libmpv2 ffmpeg
       - name: macOS media dependencies
         if: runner.os == 'macOS'
         run: brew install poppler mpv

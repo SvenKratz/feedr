@@ -7,3 +7,4 @@ pub mod model;
 pub mod platform;
 pub mod store;
 pub mod ui;
+pub mod update;

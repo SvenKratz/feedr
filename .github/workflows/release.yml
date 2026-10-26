@@ -1,0 +1,66 @@
+name: Release packages
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  packages:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-aarch64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          test "$RELEASE_TAG" = "v$version"
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update && sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev libegl1-mesa-dev libwayland-dev poppler-utils libmpv2 ffmpeg
+      - name: macOS media dependencies
+        if: runner.os == 'macOS'
+        run: brew install poppler mpv
+      - run: cargo test --all-targets --locked
+      - run: cargo build --release --locked
+      - run: python3 scripts/smoke.py target/release/feedr
+      - run: python3 scripts/media-smoke.py target/release/feedr
+        env:
+          FEEDR_TEST_NULL_AUDIO: '1'
+      - run: python3 scripts/package-release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feedr-${{ matrix.platform }}
+          path: |
+            dist/feedr-v*
+  publish:
+    needs: packages
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish verified platform packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "Feedr $RELEASE_TAG" --generate-notes --latest

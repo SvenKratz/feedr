@@ -47,7 +47,9 @@ Demo posts are deduplicated and stored locally. To keep demo/testing data separa
 
 ## Interacting with resources
 
-The feed uses dense, neutral artifact rows. Images, PDF first pages and video posters have small thumbnails; Markdown shows a one-line document excerpt. Click the artifact to open the full preview in Feedr's shared sidebar. Images support fit, zoom, drag-to-pan, and optional full-resolution loading within decode limits. Double-click an image or video preview, or choose **Expand**, to fill the Feedr window. **Back to feed**, Escape, or another double-click returns to the same sidebar attachment. Expanded images fit the available window and retain zoom/pan controls; video reuses the same player and playback position. Markdown uses native styled text and resolves local images relative to the document. Uncheck **Render Markdown** to see source; this preference also applies to feed excerpts and persists between normal launches. **Copy source** copies the original Markdown.
+The feed uses dense, neutral artifact rows. Images, PDF first pages and video posters have small thumbnails; Markdown shows a one-line document excerpt. Click the artifact to open the full preview in Feedr's shared sidebar. Its compact header puts the filename first, with a dropdown for grouped attachments. The shortened path and Open externally, Show in folder and Copy location icons share one line; hover reveals action labels and the complete path. Markdown has a **Rendered / Source** switch and a copy icon for the original Markdown, with confirmation after copying. The rendering preference also applies to feed excerpts and persists between normal launches.
+
+Images have small **− / +** buttons, a **Fit** control, and a **Full res** checkmark beneath the image in both sidebar and expanded previews. Drag to pan; optional full-resolution loading stays within decode limits. Double-click an image or video preview, or choose the expand icon, to fill the Feedr window. **Back to feed**, Escape, or another double-click returns to the same sidebar attachment. Expanded images fit the available window and retain zoom/pan controls; video reuses the same player and playback position. Markdown uses native styled text and resolves local images relative to the document.
 
 PDFs have page navigation, a page number control, zoom/pan, and a lazy thumbnail strip. The cache holds at most nine rendered pages; switching resources cancels PDF helpers. Video starts paused inside Feedr and provides play/pause, seeking, duration, volume, and audio. Closing the sidebar or switching resources stops that player. Source changes invalidate previews without adding duplicate cards.
 
@@ -143,9 +145,24 @@ The service subscribes to herdr lifecycle events and reads authoritative snapsho
 
 The broker starts automatically on the first CLI/MCP/GUI use and continues when windows close. It acknowledges posts after a SQLite transaction commits. Session-scoped idempotency keys make publication retries safe; expected revisions prevent conflicting updates. Files are live references, not archived copies. Missing or unmounted files stay in history and are hidden from the desktop feed by default; **View → Show unavailable files** includes them. Remote contexts cannot open a same-named local file. Herdr sessions without native IDs use terminal identity; a same-agent replacement inside the same terminal cannot always be distinguished until the harness reports a native session ID.
 
+## Automatic updates
+
+Feedr checks [GitHub releases](https://github.com/SvenKratz/feedr/releases) at startup when due and every six hours while running. New stable releases download and install automatically, as requested; a five-second restart countdown offers **Later**. Click the version beside **feedr** for release notes, download progress, **Check now**, and the automatic-update switch. Turning automatic updates off leaves manual checking and installation available.
+
+Only a newer semantic version with an exact macOS/Linux and Apple Silicon/Intel/ARM package match is eligible. Feedr verifies GitHub's SHA-256 asset digest before extraction, rejects unsafe archive entries, and validates the staged executable's version (and the macOS bundle signature). The app closes before replacement, drains the local service's current requests, then restarts with the same data directory. The previous application is kept in its staging folder and restored if the new app fails its startup check. Development executables in Cargo build directories are not replaced automatically; macOS requires a Feedr.app bundle and the installation folder must be writable.
+
+Public releases need no sign-in. For private repositories, Feedr uses the existing `gh auth login` credential through GitHub CLI; it never stores a GitHub token in app preferences. No releases yet, missing platform packages, unavailable authentication, and interrupted downloads have distinct status messages. Network or checksum failures leave the installed application in place.
+
+```sh
+feedr update-check     # Latest release metadata and notes as JSON, or null if none exist
+feedr stop             # Gracefully stop the local feed service
+```
+
+To publish update packages, set Cargo's version and push its matching `vVERSION` tag. The release workflow tests and packages macOS and Linux builds for aarch64 and x86_64, then publishes all four archives and checksums together. `python3 scripts/package-release.py` packages a locally built `target/release/feedr`. These packages still require the media runtimes described above; macOS bundles are ad-hoc signed, not notarized.
+
 ## Data and diagnostics
 
-Default macOS location: `~/Library/Application Support/feedr/`. Linux: `$XDG_DATA_HOME/feedr/`, normally `~/.local/share/feedr/`. The directory contains `feedr.sqlite3`, `feedr.sock`, `broker.lock`, `broker.log`, and optional demo files/socket configuration. The directory is user-only and the socket is mode 0600. `--data-dir DIR` or `FEEDR_DATA_DIR` selects an isolated store; use a short path because Unix sockets have path-length limits.
+Default macOS location: `~/Library/Application Support/feedr/`. Linux: `$XDG_DATA_HOME/feedr/`, normally `~/.local/share/feedr/`. The directory contains `feedr.sqlite3`, `feedr.sock`, `broker.lock`, `broker.log`, `update.lock`, update status/installer logs under `updates/`, and optional demo files/socket configuration. The directory is user-only and the socket is mode 0600. `--data-dir DIR` or `FEEDR_DATA_DIR` selects an isolated store; use a short path because Unix sockets have path-length limits.
 
 The local service is not exposed on TCP and requires no cloud account. Any process running as your user may access the local service. Remove demo cards with Archive. To stop a testing service, stop its `feedr … serve` process; the next client starts it again. During development, restart an existing broker after rebuilding so the service and GUI use the same version.
 

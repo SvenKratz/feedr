@@ -144,7 +144,12 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
             assert time.monotonic()<deadline, "Completed log mention was not discovered"
             time.sleep(0.1)
         cli("discovery", "disable")
+        assert cli("stop")["stopping"]
+        broker.wait(timeout=12)
+        broker = launch_broker()
+        assert cli("get", one["id"])["pinned"]
         print("PASS: opt-in discovery, durable deduplication/dismissal, session binding and partial JSONL tailing")
+        print("PASS: graceful service shutdown preserves acknowledged posts across restart")
         print("PASS: concurrent CLI posts, deduplication, revision conflicts, restart recovery, MCP handshake and tool calls")
     finally:
         for child in reversed(children):

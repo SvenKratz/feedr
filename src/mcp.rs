@@ -40,7 +40,12 @@ impl FeedrMcp {
         let client = self.client.clone();
         let method = method.to_owned();
         Ok(
-            match tokio::task::spawn_blocking(move || client.call::<Value>(&method, params)).await {
+            match tokio::task::spawn_blocking(move || {
+                client.ensure_running()?;
+                client.call::<Value>(&method, params)
+            })
+            .await
+            {
                 Ok(Ok(v)) => CallToolResult::success(vec![Content::text(v.to_string())]),
                 Ok(Err(e)) => CallToolResult::error(vec![Content::text(format!("{e:#}"))]),
                 Err(e) => CallToolResult::error(vec![Content::text(e.to_string())]),
