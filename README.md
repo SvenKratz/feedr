@@ -2,6 +2,10 @@
 
 A dark, terminal-inspired native Rust desktop companion to [herdr](https://herdr.dev). Feedr puts agent deliverables in compact, session-colored feed columns so you can preview images, video, PDFs and Markdown, open links, and reveal files without copying paths from a terminal.
 
+![Feedr's native desktop UI with two session-colored feed columns, compact artifact rows, and an image open in the sidebar.](docs/assets/feedr-hero.png)
+
+*Native macOS app with demo sessions and artifacts.*
+
 This local testing build includes a persistent SQLite-backed service, live herdr sessions, MCP/CLI publishing, search and filters, pins/archive/read state, built-in image/Markdown/PDF/video previews, native open/reveal actions, and optional deterministic mention discovery. Remote artifact transfer, tray notifications and the public viewer contribution API are still planned. macOS is tested locally; Linux runtime verification remains outstanding.
 
 Agents choose what to publish through MCP or the CLI. Optional mention discovery can also surface resources from completed output, using file-type filters and passive viewport reads that leave the agent's scroll position alone.
