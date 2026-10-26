@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Feedr
+Comment=Your agents' resources, within reach
+Exec=feedr gui
+Terminal=false
+Type=Application
+Icon=feedr
+Categories=Development;Utility;
+StartupWMClass=dev.feedr.desktop

@@ -1,0 +1,15 @@
+id = "dev.feedr"
+name = "Feedr"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Open your agents' resource feed"
+platforms = ["macos", "linux"]
+
+[[startup]]
+command = ["feedr", "start"]
+
+[[actions]]
+id = "open"
+title = "Open Feedr"
+contexts = ["workspace", "pane"]
+command = ["feedr", "gui"]

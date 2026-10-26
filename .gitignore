@@ -1,0 +1,9 @@
+/target/
+/dist/
+/ref/
+/.feedr/
+/.artifacts/
+/.playwright-mcp/
+*.sqlite3*
+*.sock
+.DS_Store

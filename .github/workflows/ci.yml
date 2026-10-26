@@ -1,0 +1,28 @@
+name: Rust checks
+on: [push, pull_request]
+jobs:
+  checks:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev libegl1-mesa-dev libwayland-dev poppler-utils libmpv2 ffmpeg
+      - name: macOS media dependencies
+        if: runner.os == 'macOS'
+        run: brew install poppler mpv
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+      - run: cargo build --locked
+      - run: python3 scripts/smoke.py target/debug/feedr
+      - run: python3 scripts/media-smoke.py target/debug/feedr
+        env:
+          FEEDR_TEST_NULL_AUDIO: '1'
