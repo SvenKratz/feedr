@@ -148,7 +148,7 @@ impl App {
         style.visuals.hyperlink_color = BLUE;
         style.visuals.code_bg_color = Color32::from_rgb(10, 20, 28);
         style.visuals.selection.bg_fill = Color32::from_rgb(34, 59, 73);
-        style.visuals.selection.stroke = egui::Stroke::new(1., BLUE);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, BLUE);
         style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(28, 43, 54);
         style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(28, 43, 54);
         style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 61, 72);
@@ -535,7 +535,7 @@ impl App {
                 egui::Frame::new()
                     .fill(PANEL)
                     .inner_margin(egui::Margin::symmetric(14, 7))
-                    .stroke(egui::Stroke::new(1., LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -732,7 +732,7 @@ impl App {
                                             color.sidebar()
                                         })
                                         .stroke(egui::Stroke::new(
-                                            if active { 2. } else { 1. },
+                                            if active { 2.0_f32 } else { 1.0_f32 },
                                             if highlighted {
                                                 color.accent
                                             } else {
@@ -976,7 +976,7 @@ impl App {
                         let header = egui::Frame::new()
                             .fill(background)
                             .stroke(egui::Stroke::new(
-                                1.,
+                                1.0_f32,
                                 if active { accent } else { background },
                             ))
                             .corner_radius(4)
@@ -1083,7 +1083,7 @@ impl App {
                                 ui.painter().vline(
                                     x,
                                     header.response.rect.y_range(),
-                                    egui::Stroke::new(3., accent),
+                                    egui::Stroke::new(3.0_f32, accent),
                                 );
                             }
                         }
@@ -1428,7 +1428,7 @@ impl App {
                 egui::Frame::new()
                     .fill(PANEL)
                     .inner_margin(egui::Margin::symmetric(12, 6))
-                    .stroke(egui::Stroke::new(1., LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1521,7 +1521,7 @@ impl App {
                 egui::Frame::new()
                     .fill(PANEL)
                     .inner_margin(20)
-                    .stroke(egui::Stroke::new(1., LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {

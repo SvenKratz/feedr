@@ -283,11 +283,16 @@ impl Artifacts {
                 painter.circle_stroke(
                     Pos2::new(status_x - 6., rect.top() + 12.),
                     2.,
-                    Stroke::new(1., MUTED),
+                    Stroke::new(1.0_f32, MUTED),
                 );
             }
             if options.selected {
-                painter.rect_stroke(rect, 0., Stroke::new(1., MUTED), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.,
+                    Stroke::new(1.0_f32, MUTED),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
         let mut tooltip = format!(
@@ -397,7 +402,7 @@ fn excerpt(text: &str, rendered: bool) -> String {
 
 fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
     let at = |x: f32, y: f32| r.min + Vec2::new(x * r.width(), y * r.height());
-    let stroke = Stroke::new(1.5, BLUE);
+    let stroke = Stroke::new(1.5_f32, BLUE);
     match resource.kind {
         ResourceKind::Folder => {
             let points = vec![

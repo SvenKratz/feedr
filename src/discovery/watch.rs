@@ -37,7 +37,7 @@ pub(crate) fn initial_cursor(source: &LogSource) -> Cursor {
     }
     fs::metadata(&source.path)
         .map(|metadata| {
-            let mut last = [b'\n'];
+            let mut last = *b"\n";
             if metadata.len() > 0
                 && let Ok(mut file) = fs::File::open(&source.path)
             {
