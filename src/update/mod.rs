@@ -1,6 +1,6 @@
 //! GitHub release metadata and verified platform packages. Network work stays off the UI thread.
 mod install;
-pub use install::{Plan, apply, destination, launch, prepare, verify_package};
+pub use install::{Plan, apply, destination, launch, package_managed, prepare, verify_package};
 
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::blocking::{Client, Response};

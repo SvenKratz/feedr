@@ -267,10 +267,16 @@ impl Updates {
             .show(ctx, |ui| {
                 ui.heading(format!("Feedr {}", env!("CARGO_PKG_VERSION")));
                 ui.add_space(6.);
+                let managed =
+                    std::env::current_exe().is_ok_and(|path| update::package_managed(&path));
                 let changed = ui
                     .checkbox(
                         &mut self.automatic,
-                        "Download and install updates automatically",
+                        if managed {
+                            "Check GitHub for updates automatically"
+                        } else {
+                            "Download and install updates automatically"
+                        },
                     )
                     .changed();
                 if changed {
@@ -283,9 +289,13 @@ impl Updates {
                     }
                 }
                 ui.label(
-                    RichText::new("Checks every 6 hours. Feedr restarts after a verified update.")
-                        .size(11.)
-                        .color(MUTED),
+                    RichText::new(if managed {
+                        "Checks every 6 hours. Install Debian package updates with apt."
+                    } else {
+                        "Checks every 6 hours. Feedr restarts after a verified update."
+                    })
+                    .size(11.)
+                    .color(MUTED),
                 );
                 ui.add_space(10.);
                 match &mut self.phase {

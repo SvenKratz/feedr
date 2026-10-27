@@ -6,16 +6,34 @@ A dark, terminal-inspired native Rust desktop companion to [herdr](https://herdr
 
 *Native macOS app with demo sessions and artifacts.*
 
-This local testing build includes a persistent SQLite-backed service, live herdr sessions, MCP/CLI publishing, search and filters, pins/archive/read state, built-in image/Markdown/PDF/video previews, native open/reveal actions, and optional deterministic mention discovery. Remote artifact transfer, tray notifications and the public viewer contribution API are still planned. macOS is tested locally; Linux runtime verification remains outstanding.
+This public preview includes a persistent SQLite-backed service, live herdr sessions, MCP/CLI publishing, search and filters, pins/archive/read state, built-in image/Markdown/PDF/video previews, native open/reveal actions, and optional deterministic mention discovery. Remote artifact transfer, tray notifications and the public viewer contribution API are still planned.
 
 Agents choose what to publish through MCP or the CLI. Optional mention discovery can also surface resources from completed output, using file-type filters and passive viewport reads that leave the agent's scroll position alone.
 
-## Run
+## Install
+
+Download installers, release notes, source archives and checksums from [GitHub releases](https://github.com/SvenKratz/feedr/releases/latest).
+
+| Platform | Package |
+|---|---|
+| macOS 14+, Apple Silicon | `feedr-vVERSION-macos-aarch64.dmg` |
+| macOS 14+, Intel | `feedr-vVERSION-macos-x86_64.dmg` |
+| Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_VERSION_amd64.deb` |
+| Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_VERSION_arm64.deb` |
+| Source | `feedr-vVERSION-src.tar.gz` / `.zip` |
+
+On **macOS**, open the DMG and drag Feedr to Applications. Install PDF/video dependencies with `brew install poppler mpv ffmpeg`; images and Markdown need no additional runtimes. The first release is ad-hoc signed, **without Developer ID signing or notarization**. Gatekeeper may block the download; review the source before deciding whether to authorize it, or build from source.
+
+On **Linux**, install the downloaded package with `sudo apt install ./feedr_VERSION_amd64.deb` (substitute the actual version and `arm64` on ARM). Apt installs the media and desktop dependencies. Launch from your application menu or run `feedr gui`. The package does not install a system service: the local broker starts when needed and runs as your user. Uninstalling leaves your feed history intact.
+
+ZIP/tar archives are also provided for portable installs and the automatic updater. Each asset has a `.sha256` sidecar, and `SHA256SUMS` covers all ten download packages. Binary packages include Rust dependency notices. Linux release validation includes package installation, installed CLI/MCP and media checks, X11 GUI startup under Xvfb, and removal preserving data; this does not cover every desktop environment or Wayland.
+
+## Build from source
 
 Rust 1.88 or newer is required. On macOS:
 
 ```sh
-brew install poppler mpv
+brew install poppler mpv ffmpeg
 cargo run -- gui
 ```
 
@@ -35,7 +53,7 @@ sudo apt-get install build-essential pkg-config libxkbcommon-dev libxcb-shape0-d
 cargo run -- gui
 ```
 
-Linux GUI runtime testing is tracked separately from macOS validation; the CI workflow is configured to run builds, tests and backend smoke checks on both platforms. `packaging/feedr.desktop` is supplied for Linux desktop installation.
+Release Linux binaries are built on Debian 12 (bookworm); Debian packages declare the runtime dependencies. `packaging/feedr.desktop` supplies the desktop launcher. X11 is exercised in the release pipeline; real desktop integration and Wayland testing remain ongoing.
 
 Create four clearly labeled demo posts and open the app:
 
@@ -69,14 +87,14 @@ Search, resource-type filters, Pinned and Archived apply across the open columns
 
 ## Native media dependencies
 
-The Rust UI embeds video through libmpv's software render API; audio is handled by mpv. PDF pages render through isolated Poppler helpers (`pdfinfo`/`pdftoppm`). Video posters use FFmpeg. On macOS these are installed by `brew install poppler mpv`; on Debian/Ubuntu use `poppler-utils libmpv2 ffmpeg` (`libmpv1` on older distributions). Homebrew locations are searched explicitly so launching from Finder works without a shell PATH. The local `.app` requires these installed runtimes; they are not bundled or notarized for distribution yet. Upstream mpv/Poppler distributions retain their own licenses.
+The Rust UI embeds video through libmpv's software render API; audio is handled by mpv. PDF pages render through isolated Poppler helpers (`pdfinfo`/`pdftoppm`). Video posters use FFmpeg. On macOS these are installed by `brew install poppler mpv ffmpeg`; Debian packages install `poppler-utils libmpv2 ffmpeg` as dependencies. Homebrew locations are searched explicitly so launching from Finder works without a shell PATH. Media runtimes are separate system dependencies, with their own upstream licenses.
 
 | Media | macOS native backend checks | Linux |
 |---|---|---|
-| PDF, including multi-page navigation | Poppler rendered first/last pages; corrupt files report an error | Implementation and CI checks configured; runtime unverified |
-| MP4 / MOV: H.264 + AAC | Frames, selected audio track, seek and pause passed | Runtime unverified |
-| WebM: VP9 + Opus | Frames, selected audio track, seek and pause passed | Runtime unverified |
-| MKV: H.264 + Opus | Frames, selected audio track, seek and pause passed | Runtime unverified |
+| PDF, including multi-page navigation | Poppler rendered first/last pages; corrupt files report an error | Same backend checks required for both release architectures |
+| MP4 / MOV: H.264 + AAC | Frames, selected audio track, seek and pause passed | Same checks through the installed Debian package |
+| WebM: VP9 + Opus | Frames, selected audio track, seek and pause passed | Same checks through the installed Debian package |
+| MKV: H.264 + Opus | Frames, selected audio track, seek and pause passed | Same checks through the installed Debian package |
 
 PDFs over 512 MiB and more than 100,000 pages are rejected for preview. Encrypted PDFs requiring a password report the Poppler error and retain Open externally. Each helper has a 25-second time limit and bounded output. Image decoding is limited to 128 MiB and 16,000 pixels per dimension. Other codecs depend on the installed mpv/FFmpeg build and report failures in the sidebar.
 
@@ -149,7 +167,7 @@ The broker starts automatically on the first CLI/MCP/GUI use and continues when 
 
 Feedr checks [GitHub releases](https://github.com/SvenKratz/feedr/releases) at startup when due and every six hours while running. New stable releases download and install automatically, as requested; a five-second restart countdown offers **Later**. Click the version beside **feedr** for release notes, download progress, **Check now**, and the automatic-update switch. Turning automatic updates off leaves manual checking and installation available.
 
-Only a newer semantic version with an exact macOS/Linux and Apple Silicon/Intel/ARM package match is eligible. Feedr verifies GitHub's SHA-256 asset digest before extraction, rejects unsafe archive entries, and validates the staged executable's version (and the macOS bundle signature). The app closes before replacement, drains the local service's current requests, then restarts with the same data directory. The previous application is kept in its staging folder and restored if the new app fails its startup check. Development executables in Cargo build directories are not replaced automatically; macOS requires a Feedr.app bundle and the installation folder must be writable.
+Only a newer semantic version with an exact macOS/Linux and Apple Silicon/Intel/ARM package match is eligible. Feedr verifies GitHub's SHA-256 asset digest before extraction, rejects unsafe archive entries, and validates the staged executable's version (and the macOS bundle signature). The app closes before replacement, drains the local service's current requests, then restarts with the same data directory. The previous application is kept in its staging folder and restored if the new app fails its startup check. Development executables in Cargo build directories are not replaced automatically; macOS requires a Feedr.app bundle and the installation folder must be writable. **Debian installations** in `/usr/bin` check GitHub for updates and release notes, but installation stays with apt: download the new `.deb` and run `sudo apt install ./feedr_VERSION_ARCH.deb`. The portable updater never overwrites package-manager-owned files.
 
 Public releases need no sign-in. For private repositories, Feedr uses the existing `gh auth login` credential through GitHub CLI; it never stores a GitHub token in app preferences. No releases yet, missing platform packages, unavailable authentication, and interrupted downloads have distinct status messages. Network or checksum failures leave the installed application in place.
 
@@ -158,7 +176,7 @@ feedr update-check     # Latest release metadata and notes as JSON, or null if n
 feedr stop             # Gracefully stop the local feed service
 ```
 
-To publish update packages, set Cargo's version and push its matching `vVERSION` tag. The release workflow tests and packages macOS and Linux builds for aarch64 and x86_64, then publishes all four archives and checksums together. `python3 scripts/package-release.py` packages a locally built `target/release/feedr`. These packages still require the media runtimes described above; macOS bundles are ad-hoc signed, not notarized.
+To publish a release, update Cargo's version and `packaging/release-notes.md`, then push the matching `vVERSION` tag. The workflow builds macOS and Linux for aarch64 and x86_64, validates installers and media, and creates source archives from the tagged tree. It uploads a draft, verifies all ten packages and their GitHub SHA-256 digests, then publishes the complete release. Published releases are never overwritten. See [release build instructions](packaging/RELEASING.md) for local packaging and optional Developer ID signing/notarization.
 
 ## Data and diagnostics
 

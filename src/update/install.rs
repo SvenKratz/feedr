@@ -118,12 +118,20 @@ pub fn destination(exe: &Path) -> Result<(PathBuf, bool)> {
     } else {
         ensure!(cfg!(target_os = "linux"), "Unsupported update platform");
         ensure!(
+            !package_managed(exe),
+            "This installation is managed by the system package manager. Download the latest .deb from GitHub and install it with apt; Feedr will not replace /usr/bin files."
+        );
+        ensure!(
             !exe.ancestors()
                 .any(|p| p.file_name().is_some_and(|n| n == "target")),
             "Build-directory executables are not replaced automatically; install Feedr to a user-writable location first"
         );
         Ok((exe.to_owned(), false))
     }
+}
+
+pub fn package_managed(exe: &Path) -> bool {
+    cfg!(target_os = "linux") && (exe.starts_with("/usr/bin") || exe.starts_with("/bin"))
 }
 
 pub fn prepare(
@@ -532,6 +540,20 @@ pub fn apply(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn debian_installations_are_never_replaced_by_the_portable_updater() {
+        for path in ["/usr/bin/feedr", "/bin/feedr"] {
+            assert!(
+                destination(Path::new(path))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("apt")
+            );
+        }
+        let portable = Path::new("/home/test/.local/bin/feedr");
+        assert_eq!(destination(portable).unwrap(), (portable.to_owned(), false));
+    }
     #[test]
     fn installer_waits_for_parent_and_rolls_back_a_build_that_cannot_start() {
         for succeeds in [true, false] {

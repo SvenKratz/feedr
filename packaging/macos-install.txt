@@ -1,0 +1,17 @@
+Feedr — installation
+
+Drag Feedr.app to Applications, then launch it from Applications.
+
+For built-in PDF and video previews, install the separate media runtimes:
+    brew install poppler mpv ffmpeg
+Image and Markdown previews need no additional media runtimes.
+
+This release is ad-hoc signed, without Apple Developer ID signing or notarization.
+Gatekeeper may block it. Review the source before authorizing an unsigned download.
+If you prefer, build from source using the instructions in README.md.
+
+Source, release notes and checksums:
+https://github.com/SvenKratz/feedr
+
+Your feed history stays in ~/Library/Application Support/feedr/.
+Removing the app does not delete that history.
