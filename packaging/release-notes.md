@@ -10,8 +10,8 @@ Feedr's first public preview: agent artifacts in a compact native desktop feed.
 
 | Platform | Installer |
 |---|---|
-| macOS, Apple Silicon | `feedr-v0.1.0-macos-aarch64.dmg` |
-| macOS, Intel | `feedr-v0.1.0-macos-x86_64.dmg` |
+| macOS 14+, Apple Silicon | `feedr-v0.1.0-macos-aarch64.dmg` |
+| macOS 14+, Intel | `feedr-v0.1.0-macos-x86_64.dmg` |
 | Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_0.1.0_amd64.deb` |
 | Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_0.1.0_arm64.deb` |
 | Source | `feedr-v0.1.0-src.tar.gz` or `feedr-v0.1.0-src.zip` |

@@ -54,7 +54,8 @@ def background(path, arch):
     draw.line((695, 435, 720, 457, 695, 479), fill='#83c6c4', width=4)
     draw.text((320, 625), 'Drag Feedr to Applications', font=ImageFont.truetype(font, 29), fill='#d5e1e7')
     draw.text((68, 770), f'v{VERSION} · {arch}', font=ImageFont.truetype(font, 20), fill='#829ca7')
-    image.save(path)
+    # Finder lays out backgrounds in logical pixels; rasterize at 2x then reduce.
+    image.resize((640, 420), Image.Resampling.LANCZOS).save(path)
 
 
 def macos(binary, dist, stage, arch, notices):
@@ -105,8 +106,8 @@ def macos(binary, dist, stage, arch, notices):
         'background': str(wallpaper), 'format': 'UDZO',
         'window_rect': ((100, 100), (640, 420)),
         'icon_locations': {'Feedr.app': (170, 230), 'Applications': (470, 230),
-                           'Read before installing.txt': (550, 360)},
-        'default_view': 'icon-view', 'icon_size': 96, 'text_size': 13,
+                           'Read before installing.txt': (550, 345)},
+        'default_view': 'icon-view', 'icon_size': 80, 'text_size': 13,
         'show_toolbar': False, 'show_status_bar': False, 'show_sidebar': False,
         'show_pathbar': False, 'show_tab_view': False,
     })
