@@ -85,6 +85,8 @@ jobs:
         with:
           name: linux-gui-${{ matrix.deb }}
           path: .artifacts/linux-gui.*
+          include-hidden-files: true
+          if-no-files-found: error
   source:
     runs-on: ubuntu-24.04
     steps:
