@@ -24,6 +24,8 @@ Download installers, release notes, source archives and checksums from [GitHub r
 
 On **macOS**, open the DMG and drag Feedr to Applications. Install PDF/video dependencies with `brew install poppler mpv ffmpeg`; images and Markdown need no additional runtimes. The first release is ad-hoc signed, **without Developer ID signing or notarization**. Gatekeeper may block the download; review the source before deciding whether to authorize it, or build from source.
 
+To add `feedr` to your terminal PATH, choose **feedr → Install CLI…** in the app, then **Install CLI**. It creates `~/.local/bin/feedr` as a link to the installed app and adds an idempotent PATH block to your zsh/bash startup files. Open a new terminal afterward. Existing shell configuration, symlinked dotfiles and unrelated commands are preserved. The link follows app updates; if you move the app, install the CLI again. The installer refuses to link to a mounted DMG. The equivalent command is `/Applications/Feedr.app/Contents/MacOS/feedr install-cli`; `--bin-dir /absolute/path` chooses another directory and `--no-modify-path` leaves profiles unchanged. Other shells show a manual PATH step.
+
 On **Linux**, install the downloaded package with `sudo apt install ./feedr_VERSION_amd64.deb` (substitute the actual version and `arm64` on ARM). Apt installs the media and desktop dependencies. Launch from your application menu or run `feedr gui`. The package does not install a system service: the local broker starts when needed and runs as your user. Uninstalling leaves your feed history intact.
 
 ZIP/tar archives are also provided for portable installs and the automatic updater. Each asset has a `.sha256` sidecar, and `SHA256SUMS` covers all ten download packages. Binary packages include Rust dependency notices. Linux release validation includes package installation, installed CLI/MCP and media checks, X11 GUI startup under Xvfb, and removal preserving data; this does not cover every desktop environment or Wayland.
@@ -143,6 +145,8 @@ Paths resolve relative to the producer's working directory. The process inherits
 ```
 
 ## MCP
+
+Click **?** or choose **feedr → Connect MCP…** for copyable MCP configuration JSON and complete **Claude Code** / **Codex** registration commands. The panel uses the full path to the running app and its data directory, so no terminal PATH setup is required. It computes the configuration once and does not poll the service. Restart the client after registration. The Codex command follows [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 Print the exact launch configuration for the installed binary:
 

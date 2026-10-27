@@ -2,6 +2,13 @@ Feedr — installation
 
 Drag Feedr.app to Applications, then launch it from Applications.
 
+To use feedr in Terminal, choose feedr → Install CLI in the app.
+This links ~/.local/bin/feedr to the installed app and updates your zsh/bash PATH.
+Open a new terminal after installing. Existing unrelated commands are preserved.
+
+For Claude or Codex, click ? in Feedr for copyable MCP JSON and setup commands.
+These use the app's full executable path and do not require installing the CLI.
+
 For built-in PDF and video previews, install the separate media runtimes:
     brew install poppler mpv ffmpeg
 Image and Markdown previews need no additional media runtimes.

@@ -33,6 +33,7 @@ def chunk(kind, data):
 png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1024, 1024, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 original = iconset / "original.png"
 original.write_bytes(png)
+(root / "packaging/feedr.png").write_bytes(png)
 for size in [16, 32, 128, 256, 512]:
     for scale in [1, 2]:
         name = f"icon_{size}x{size}{'@2x' if scale == 2 else ''}.png"

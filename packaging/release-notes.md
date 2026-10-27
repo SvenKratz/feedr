@@ -1,24 +1,22 @@
-Feedr's first public preview: agent artifacts in a compact native desktop feed.
+Feedr 0.1.1 makes desktop installation and agent setup easier.
 
-- Session-colored, rearrangeable feed columns with search, pins, unread state and saved history.
-- Image and rendered Markdown previews; paginated PDFs; embedded video with audio and seeking.
-- Compact viewer controls, window-filling image/video previews, and native open/reveal actions.
-- Agent publishing over MCP or CLI, plus optional deterministic mention discovery with file-type filters.
-- GitHub release notes and verified automatic updates for app bundles and portable installations.
+- **Install CLI:** choose feedr → Install CLI to link the installed app into ~/.local/bin and configure zsh/bash PATH for new terminals. Existing dotfiles and unrelated commands are preserved; app updates also update the CLI.
+- **MCP setup:** the ? panel shows copyable JSON and complete Claude Code / Codex registration commands using the full executable path. No terminal PATH setup is needed for MCP.
+- **Matching app icon:** the running app, macOS Dock and Linux taskbar use the same Feedr artwork as the packaged app.
 
 ### Downloads and installation
 
 | Platform | Installer |
 |---|---|
-| macOS 14+, Apple Silicon | `feedr-v0.1.0-macos-aarch64.dmg` |
-| macOS 14+, Intel | `feedr-v0.1.0-macos-x86_64.dmg` |
-| Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_0.1.0_amd64.deb` |
-| Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_0.1.0_arm64.deb` |
-| Source | `feedr-v0.1.0-src.tar.gz` or `feedr-v0.1.0-src.zip` |
+| macOS 14+, Apple Silicon | `feedr-v0.1.1-macos-aarch64.dmg` |
+| macOS 14+, Intel | `feedr-v0.1.1-macos-x86_64.dmg` |
+| Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_0.1.1_amd64.deb` |
+| Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_0.1.1_arm64.deb` |
+| Source | `feedr-v0.1.1-src.tar.gz` or `feedr-v0.1.1-src.zip` |
 
-**macOS:** open the DMG and drag Feedr to Applications. Install the separate PDF/video runtimes with `brew install poppler mpv ffmpeg`. Images and Markdown work without them. These first DMGs are **ad-hoc signed, without Developer ID signing or notarization**; Gatekeeper may block them. Source builds are available if you prefer not to authorize an unnotarized download.
+**macOS:** open the DMG and drag Feedr to Applications. To add the terminal command, launch the app and choose **feedr → Install CLI…**, then open a new terminal. Click **?** for MCP setup. Install the separate PDF/video runtimes with `brew install poppler mpv ffmpeg`. Images and Markdown work without them. These DMGs are **ad-hoc signed, without Developer ID signing or notarization**; Gatekeeper may block them. Source builds are available if you prefer not to authorize an unnotarized download.
 
-**Linux:** install the downloaded package with `sudo apt install ./feedr_0.1.0_amd64.deb` (use `arm64` on ARM). Apt installs the media and desktop dependencies. Launch Feedr from the application menu or `feedr gui`. X11 startup is smoke-tested under Xvfb; Wayland desktop behavior and hotkeys need testing on real desktops. Ctrl+Alt+F is available on X11; use the launcher on Wayland.
+**Linux:** install the downloaded package with `sudo apt install ./feedr_0.1.1_amd64.deb` (use `arm64` on ARM). Apt installs the media and desktop dependencies. Launch Feedr from the application menu or `feedr gui`. X11 startup is smoke-tested under Xvfb; Wayland desktop behavior and hotkeys need testing on real desktops. Ctrl+Alt+F is available on X11; use the launcher on Wayland.
 
 ZIP/tar archives remain available for portable installs and the automatic updater. Debian installations check GitHub for release notes and availability; install newer `.deb` files with apt so the package database stays consistent. Removing the app/package leaves your feed history intact.
 

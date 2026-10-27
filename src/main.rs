@@ -19,6 +19,14 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Install a user-level feedr command and configure the shell's PATH.
+    InstallCli {
+        #[arg(long)]
+        bin_dir: Option<PathBuf>,
+        /// Leave shell profiles unchanged.
+        #[arg(long)]
+        no_modify_path: bool,
+    },
     /// Configure opt-in mention discovery and feed completed hook text.
     Discovery {
         #[command(subcommand)]
@@ -314,6 +322,16 @@ fn print(value: impl serde::Serialize) -> Result<()> {
 }
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Commands::InstallCli {
+        bin_dir,
+        no_modify_path,
+    }) = &cli.command
+    {
+        return print(feedr::cli_install::install(
+            bin_dir.clone(),
+            !no_modify_path,
+        )?);
+    }
     if let Some(Commands::MediaCheck { resource }) = &cli.command {
         return media_check(resource);
     }
@@ -332,17 +350,11 @@ fn main() -> Result<()> {
         return broker::serve(paths);
     }
     if let Some(Commands::McpConfig { session }) = &cli.command {
-        let mut args = vec![
-            "--data-dir".to_owned(),
-            paths.root.to_string_lossy().into_owned(),
-            "mcp".into(),
-        ];
-        if let Some(id) = session {
-            args.extend(["--session".into(), id.clone()]);
-        }
-        return print(
-            json!({"mcpServers":{"feedr":{"command":std::env::current_exe()?.to_string_lossy(),"args":args}}}),
-        );
+        return print(feedr::setup::mcp_config(
+            &std::env::current_exe()?,
+            &paths.root,
+            session.as_deref(),
+        ));
     }
     let client = Client::new(paths.clone());
     if matches!(cli.command, Some(Commands::Stop)) {
@@ -353,6 +365,7 @@ fn main() -> Result<()> {
         Commands::Discovery { command } => discovery_command(&client, command),
         Commands::Start => print(client.call::<Value>("ping", json!({}))?),
         Commands::MediaCheck { .. }
+        | Commands::InstallCli { .. }
         | Commands::UpdateCheck
         | Commands::UpdateApply { .. }
         | Commands::UpdateVerify { .. }

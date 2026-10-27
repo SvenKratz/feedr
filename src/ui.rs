@@ -23,6 +23,7 @@ use feed_columns::{Feed, Layout as ColumnLayout, Target as FeedTarget};
 mod media;
 mod session_color;
 mod session_list;
+mod setup;
 mod updates;
 mod viewer_header;
 
@@ -51,11 +52,18 @@ enum Preview {
 }
 
 pub fn run(client: Client) -> Result<()> {
+    let icon = image::load_from_memory(include_bytes!("../packaging/feedr.png"))?.into_rgba8();
+    let (width, height) = icon.dimensions();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1260., 820.])
             .with_min_inner_size([800., 560.])
-            .with_app_id("dev.feedr.desktop"),
+            .with_app_id("dev.feedr.desktop")
+            .with_icon(egui::IconData {
+                rgba: icon.into_raw(),
+                width,
+                height,
+            }),
         ..Default::default()
     };
     eframe::run_native(
@@ -66,9 +74,10 @@ pub fn run(client: Client) -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
 struct App {
+    setup: setup::Setup,
     updates: updates::Updates,
     artifacts: artifact::Artifacts,
-    hotkey: Option<global_hotkey::GlobalHotKeyManager>,
+    _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     snapshot: Snapshot,
     columns: ColumnLayout,
     feeds: HashMap<FeedTarget, Feed>,
@@ -105,6 +114,7 @@ struct App {
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, client: Client) -> Self {
+        let setup = setup::Setup::new(client.paths.root.clone());
         let ctx = &cc.egui_ctx;
         egui_extras::install_image_loaders(ctx);
         let updates = updates::Updates::new(
@@ -267,9 +277,10 @@ impl App {
             }
         });
         Self {
+            setup,
             updates,
             artifacts: artifact::Artifacts::new(),
-            hotkey,
+            _hotkey: hotkey,
             snapshot: Snapshot::default(),
             columns,
             feeds,
@@ -553,7 +564,19 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().button_padding = egui::vec2(8., 3.);
-                    ui.label(RichText::new("feedr").size(22.).strong().color(BLUE));
+                    ui.menu_button(
+                        RichText::new("feedr").size(22.).strong().color(BLUE),
+                        |ui| {
+                            if ui.button("Connect MCP…").clicked() {
+                                self.show_help = true;
+                                ui.close();
+                            }
+                            if ui.button("Install CLI…").clicked() {
+                                self.setup.cli_open = true;
+                                ui.close();
+                            }
+                        },
+                    );
                     self.updates.button(ui);
                     let search_width = (ui.available_width() - 420.).clamp(120., 360.);
                     let search = ui.add(
@@ -572,7 +595,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("?")
-                            .on_hover_text("Publishing and keyboard shortcuts")
+                            .on_hover_text("Connect Claude, Codex or another MCP client")
                             .clicked()
                         {
                             self.show_help = !self.show_help;
@@ -1691,14 +1714,8 @@ impl eframe::App for App {
             self.feed(ctx);
         }
         self.updates.show(ctx);
-        let summon_enabled = self.hotkey.is_some();
-        if self.show_help && !self.expanded_preview {
-            egui::Window::new("Publishing to Feedr").open(&mut self.show_help).default_width(570.).show(ctx,|ui|{
-            ui.heading("Let your agent post the useful things.");ui.label("Run from an agent's herdr pane for automatic session attribution.");ui.code("feedr post --title 'Report is ready' ./report.md\nfeedr post --title 'Preview the app' http://localhost:3000\nfeedr post --title 'Output folder' ./output");
-            ui.add_space(10.);ui.label("For MCP clients, run feedr mcp-config and add the printed configuration. A global MCP client can call feedr_sessions and pass session_id when publishing.");
-            ui.label(if summon_enabled {"Ctrl+Alt+F summons Feedr while it is running."} else {"Global summon is unavailable here. Open Feedr from your desktop launcher."});
-            ui.separator();ui.label("⌘/Ctrl K — search    ↑/↓ or J/K — select    P — pin    Esc — close preview");ui.label("Images, Markdown, PDF and video open in the sidebar. Video starts paused; press Play for audio and playback.");
-        });
+        if !self.expanded_preview {
+            self.setup.show(ctx, &mut self.show_help);
         }
         if self.connections && !self.expanded_preview {
             egui::Window::new("Herdr connections")
@@ -1947,13 +1964,14 @@ mod tests {
         let (commands, _) = mpsc::channel();
         let (_, events) = mpsc::channel();
         App {
+            setup: setup::Setup::new(std::env::temp_dir().join("feedr-test-unused")),
             updates: updates::Updates::new(
                 std::env::temp_dir().join("feedr-test-unused"),
                 false,
                 0,
             ),
             artifacts: artifact::Artifacts::new(),
-            hotkey: None,
+            _hotkey: None,
             snapshot: Snapshot::default(),
             columns: ColumnLayout::default(),
             feeds: HashMap::from([(FeedTarget::All, Feed::default())]),
