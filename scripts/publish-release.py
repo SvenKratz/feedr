@@ -43,7 +43,8 @@ else:
     subprocess.run(gh + ['release', 'create', args.tag, '--verify-tag', '--draft', '--title', f'Feedr {args.tag}',
                          '--notes-file', str(root / 'packaging/release-notes.md')], check=True)
 subprocess.run(gh + ['release', 'upload', args.tag, '--clobber'] + [str(args.dist / name) for name in assets], check=True)
-release = json.loads(subprocess.check_output(['gh', 'api', f'repos/{args.repo}/releases/tags/{args.tag}']))
+release = json.loads(subprocess.check_output(gh + ['release', 'view', args.tag, '--json', 'assets,isDraft,url']))
+assert release['isDraft'], 'Only a draft may be finalized'
 remote = {asset['name']: asset for asset in release['assets']}
 assert set(remote) == set(assets), 'Unexpected or missing remote assets'
 for name in assets:
@@ -53,4 +54,4 @@ for name in assets:
     assert remote[name]['size'] == path.stat().st_size
     assert remote[name]['digest'] == 'sha256:' + digest, f'Remote digest mismatch: {name}'
 subprocess.run(gh + ['release', 'edit', args.tag, '--draft=false', '--latest'], check=True)
-print(release['html_url'])
+print(f'https://github.com/{args.repo}/releases/tag/{args.tag}')

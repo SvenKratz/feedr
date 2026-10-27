@@ -91,6 +91,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - run: python3 scripts/test-publisher.py
       - run: python3 scripts/package-source.py
       - name: Verify source archives and lockfile
         run: |
