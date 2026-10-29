@@ -55,7 +55,12 @@ impl Setup {
             installed: None,
         }
     }
-    pub fn show(&mut self, ctx: &egui::Context, open: &mut bool) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        open: &mut bool,
+        updates: &mut super::updates::Updates,
+    ) {
         if self.first_launch {
             *open = true;
             self.first_launch = false;
@@ -133,6 +138,9 @@ impl Setup {
                 .default_height(460.)
                 .max_width(780.)
                 .show(ctx, |ui| {
+                    updates.help_summary(ui);
+                    ui.separator();
+                    ui.add_space(4.);
                     ui.label("Connect an agent to receive finished reports, media, builds and preview links.");
                     ui.label(RichText::new("Works across projects. Herdr and discovery are optional.").small().color(MUTED));
                     ui.add_space(10.);

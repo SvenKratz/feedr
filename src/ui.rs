@@ -1713,10 +1713,10 @@ impl eframe::App for App {
             self.detail(ctx);
             self.feed(ctx);
         }
-        self.updates.show(ctx);
         if !self.expanded_preview {
-            self.setup.show(ctx, &mut self.show_help);
+            self.setup.show(ctx, &mut self.show_help, &mut self.updates);
         }
+        self.updates.show(ctx);
         if self.connections && !self.expanded_preview {
             egui::Window::new("Herdr connections")
                 .open(&mut self.connections)

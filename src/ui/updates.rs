@@ -253,6 +253,65 @@ impl Updates {
             }
         }
     }
+    pub fn help_summary(&mut self, ui: &mut egui::Ui) {
+        if self.automatic && !self.checked && matches!(self.phase, Phase::Idle) {
+            self.check(ui.ctx());
+        }
+        let latest = self.release.as_ref().map(|r| r.tag_name.as_str());
+        let status = match &self.phase {
+            Phase::Checking => "Checking for updates…".into(),
+            Phase::Downloading(bytes, total) if *total > 0 => format!(
+                "Downloading update · {}%",
+                bytes
+                    .saturating_mul(100)
+                    .checked_div(*total)
+                    .unwrap_or(0)
+                    .min(100)
+            ),
+            Phase::Downloading(..) => "Downloading update…".into(),
+            Phase::Ready(..) => "Update ready to install".into(),
+            Phase::Launching => "Restarting…".into(),
+            Phase::Error(_) if self.newer() => {
+                format!("{} available · update issue", latest.unwrap_or("Update"))
+            }
+            Phase::Error(_) => "Update issue · view details".into(),
+            Phase::Idle if self.newer() => format!("{} available", latest.unwrap_or("Update")),
+            Phase::Idle if self.release.is_some() => "Up to date".into(),
+            Phase::Idle if self.checked => "No releases published".into(),
+            Phase::Idle => "Check for updates".into(),
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(concat!("Feedr v", env!("CARGO_PKG_VERSION")))
+                    .strong()
+                    .size(12.)
+                    .color(INK),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(status).size(12.).color(
+                            if matches!(self.phase, Phase::Error(_)) {
+                                egui::Color32::from_rgb(235, 166, 142)
+                            } else if self.newer() {
+                                BLUE
+                            } else {
+                                MUTED
+                            },
+                        ))
+                        .frame(false),
+                    )
+                    .on_hover_text("View update details, release notes and settings")
+                    .clicked()
+                {
+                    self.open = true;
+                    if !self.checked && !self.busy() {
+                        self.check(ui.ctx());
+                    }
+                }
+            });
+        });
+    }
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open {
             return;
