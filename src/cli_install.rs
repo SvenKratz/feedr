@@ -34,11 +34,35 @@ pub fn install(bin_dir: Option<PathBuf>, modify_path: bool) -> Result<Installed>
     let exe = std::env::current_exe()?.canonicalize()?;
     #[cfg(target_os = "macos")]
     {
-        use std::os::unix::ffi::OsStrExt as _;
         ensure!(
             is_feedr_bundle(&exe),
             "Install the CLI from Feedr.app after copying the app to Applications"
         );
+        validate_location(&exe)?;
+    }
+    let home = dirs::home_dir().context("Cannot find your home directory")?;
+    let bin = bin_dir.unwrap_or_else(|| home.join(".local/bin"));
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/bash"
+        }
+        .into()
+    });
+    let zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
+    let profiles = if modify_path {
+        profiles(&home, &shell, zdotdir.as_deref())
+    } else {
+        Vec::new()
+    };
+    install_at(&exe, &bin, &profiles)
+}
+
+pub fn validate_location(exe: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
         ensure!(
             !exe.starts_with("/Volumes")
                 && !exe
@@ -59,23 +83,9 @@ pub fn install(bin_dir: Option<PathBuf>, modify_path: bool) -> Result<Installed>
             "Copy Feedr.app from the disk image to Applications before installing the CLI"
         );
     }
-    let home = dirs::home_dir().context("Cannot find your home directory")?;
-    let bin = bin_dir.unwrap_or_else(|| home.join(".local/bin"));
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "macos") {
-            "/bin/zsh"
-        } else {
-            "/bin/bash"
-        }
-        .into()
-    });
-    let zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
-    let profiles = if modify_path {
-        profiles(&home, &shell, zdotdir.as_deref())
-    } else {
-        Vec::new()
-    };
-    install_at(&exe, &bin, &profiles)
+    #[cfg(not(target_os = "macos"))]
+    let _ = exe;
+    Ok(())
 }
 
 fn is_feedr_bundle(exe: &Path) -> bool {

@@ -567,7 +567,7 @@ impl App {
                     ui.menu_button(
                         RichText::new("feedr").size(22.).strong().color(BLUE),
                         |ui| {
-                            if ui.button("Connect MCP…").clicked() {
+                            if ui.button("Agent setup…").clicked() {
                                 self.show_help = true;
                                 ui.close();
                             }
@@ -595,7 +595,7 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button("?")
-                            .on_hover_text("Connect Claude, Codex or another MCP client")
+                            .on_hover_text("Agent publishing setup and MCP configuration")
                             .clicked()
                         {
                             self.show_help = !self.show_help;
@@ -621,7 +621,7 @@ impl App {
                                 RichText::new(if connected > 0 {
                                     format!("Herdr connected ({connected})")
                                 } else {
-                                    "Waiting for herdr".into()
+                                    "Standalone".into()
                                 })
                                 .color(if connected > 0 {
                                     Color32::from_rgb(126, 190, 140)
@@ -1167,7 +1167,7 @@ impl App {
                                     } else {
                                         "No matching resources."
                                     });
-                                    if ui.button("Show publishing setup").clicked() {
+                                    if ui.button("Connect an agent").clicked() {
                                         self.show_help = true;
                                     }
                                 }
@@ -1964,7 +1964,7 @@ mod tests {
         let (commands, _) = mpsc::channel();
         let (_, events) = mpsc::channel();
         App {
-            setup: setup::Setup::new(std::env::temp_dir().join("feedr-test-unused")),
+            setup: setup::Setup::for_test(std::env::temp_dir().join("feedr-test-unused")),
             updates: updates::Updates::new(
                 std::env::temp_dir().join("feedr-test-unused"),
                 false,

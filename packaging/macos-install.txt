@@ -6,8 +6,10 @@ To use feedr in Terminal, choose feedr → Install CLI in the app.
 This links ~/.local/bin/feedr to the installed app and updates your zsh/bash PATH.
 Open a new terminal after installing. Existing unrelated commands are preserved.
 
-For Claude or Codex, click ? in Feedr for copyable MCP JSON and setup commands.
-These use the app's full executable path and do not require installing the CLI.
+On first launch, select Claude Code or Codex and choose Enable publishing.
+Restart the selected clients; in Codex, review and trust reminders in /hooks.
+Reopen Agent setup with ? anytime. Herdr and discovery are optional.
+No terminal PATH setup is needed; manual MCP configuration is also available.
 
 For built-in PDF and video previews, install the separate media runtimes:
     brew install poppler mpv ffmpeg

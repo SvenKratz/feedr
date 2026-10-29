@@ -280,10 +280,18 @@ impl Client {
         Self { paths }
     }
     pub fn call<T: serde::de::DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
+        self.call_with_timeout(method, params, Duration::from_secs(8))
+    }
+    pub fn call_with_timeout<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<T> {
         let mut stream = UnixStream::connect(&self.paths.socket)
             .with_context(|| format!("Connect to Feedr at {}", self.paths.socket.display()))?;
-        stream.set_read_timeout(Some(Duration::from_secs(8)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout.min(Duration::from_secs(5))))?;
         let request = Request {
             version: 1,
             method: method.into(),

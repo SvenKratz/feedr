@@ -53,7 +53,7 @@ impl Default for Context {
 impl Context {
     pub fn from_env() -> Self {
         let env = |k| std::env::var(k).ok().filter(|s| !s.is_empty());
-        Self {
+        let mut context = Self {
             herdr_socket: env("HERDR_SOCKET_PATH"),
             workspace_id: env("HERDR_WORKSPACE_ID"),
             tab_id: env("HERDR_TAB_ID"),
@@ -63,7 +63,21 @@ impl Context {
                 .to_string_lossy()
                 .into_owned(),
             ..Self::default()
+        };
+        if let Some(agent) = env("FEEDR_AGENT") {
+            context.agent = agent;
+            if context.herdr_socket.is_none() || context.pane_id.is_none() {
+                context.label = Path::new(&context.cwd)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                context.native_session_id = (context.agent == "Codex")
+                    .then(|| env("CODEX_THREAD_ID"))
+                    .flatten();
+            }
         }
+        context
     }
     pub fn is_local(&self) -> bool {
         self.host == local_host()

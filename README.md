@@ -1,6 +1,6 @@
 # Feedr
 
-A dark, terminal-inspired native Rust desktop companion to [herdr](https://herdr.dev). Feedr puts agent deliverables in compact, session-colored feed columns so you can preview images, video, PDFs and Markdown, open links, and reveal files without copying paths from a terminal.
+A dark, terminal-inspired native Rust desktop feed for agent deliverables. Feedr puts reports, media, builds and preview links in compact, session-colored columns so you can open them without copying paths from a terminal. It works directly with Claude Code and Codex; [herdr](https://herdr.dev) adds live session tracking and optional mention discovery.
 
 ![Feedr's native desktop UI with two session-colored feed columns, compact artifact rows, and an image open in the sidebar.](docs/assets/feedr-hero.png)
 
@@ -136,7 +136,7 @@ feedr list --search report
 feedr doctor
 ```
 
-Paths resolve relative to the producer's working directory. The process inherits herdr pane/workspace/socket context when run from a herdr pane. Posts from outside herdr are explicitly unassigned. `--session ID` binds to an ID from `feedr sessions`; global MCP clients should use the same approach. Mention discovery stays off until you enable it.
+Paths resolve relative to the producer's working directory. The process inherits herdr pane/workspace/socket context when run from a herdr pane. Outside herdr, an agent can supply its own client, project and native session context; otherwise the post stays unassigned. `--session ID` binds to a known ID from `feedr sessions`. Never guess a focused pane. Mention discovery stays off until you enable it.
 
 `feedr post --input payload.json` accepts a `PostInput` object; `--input -` reads stdin. `feedr update --input update.json` accepts an update with `id` and `expected_revision`. Omitted update fields are unchanged. Both commands return JSON and fail with a nonzero exit status on errors.
 
@@ -144,9 +144,17 @@ Paths resolve relative to the producer's working directory. The process inherits
 {"title":"Report is ready","body":"Review the findings.","resources":[{"uri":"/absolute/path/report.md"}],"idempotency_key":"report-v1"}
 ```
 
-## MCP
+## Agent setup and MCP
 
-Click **?** or choose **feedr → Connect MCP…** for copyable MCP configuration JSON and complete **Claude Code** / **Codex** registration commands. The panel uses the full path to the running app and its data directory, so no terminal PATH setup is required. It computes the configuration once and does not poll the service. Restart the client after registration. The Codex command follows [official MCP setup](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+On first launch, select **Claude Code**, **Codex**, or both, then choose **Enable publishing**. Reopen this panel with **?** or **feedr → Agent setup…**. It connects the installed app through MCP and adds a short publishing rule to the client's global instructions, so agents are told to share finished documents, media, builds, output folders and preview links before saying they are ready. Routine code edits and logs stay out. Herdr, terminal PATH setup and mention discovery are optional.
+
+**Restart the selected clients after setup.** With completion reminders enabled, Codex also requires reviewing and trusting Feedr's hooks in `/hooks`. Feedr does not bypass client trust or permissions. **Send test share** checks local delivery with a welcome document; it does not claim to test a model's willingness to publish.
+
+The optional completion check inspects only the final assistant message supplied by the client. It verifies mentioned files exist and checks explicit publication receipts for the producing session and file revision. A likely missed deliverable prompts one bounded reminder; offline Feedr never holds up completion. No terminal scrolling, transcript scanning, auto-posting or discovery activation is involved. Importance is guided by instructions and deterministic heuristics, so model adherence and unusual output formats can still vary.
+
+Setup shows the files it will change. It merges the Feedr entry and hooks, preserves other settings/instructions, and saves private backups under `agent-setup/backups/` in Feedr's data directory. Claude Code uses `~/.claude.json`, `~/.claude/CLAUDE.md` and `~/.claude/settings.json`; Codex uses `~/.codex/config.toml`, the active global `AGENTS.override.md` or `AGENTS.md`, and `~/.codex/hooks.json`. Existing `CLAUDE_CONFIG_DIR` and `CODEX_HOME` locations are respected. **Disconnect** removes Feedr's managed integration. Install the app in a stable, writable location before connecting; setup refuses mounted disk images.
+
+**Manual MCP configuration** contains copyable JSON and complete registration commands using the running app's full executable path. Manual registration alone exposes tools; it does not install the publishing policy or completion reminders. Client references: [Codex global instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md), [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude Code memory](https://code.claude.com/docs/en/memory), [Claude Code hooks](https://code.claude.com/docs/en/hooks).
 
 Print the exact launch configuration for the installed binary:
 
@@ -155,9 +163,9 @@ feedr mcp-config
 feedr mcp-config --session SESSION_ID
 ```
 
-Add the printed `mcpServers.feedr` entry to your MCP client's configuration. It launches `feedr mcp` over stdio. Tool names: `feedr_post`, `feedr_update`, `feedr_list`, `feedr_get`, `feedr_sessions`. The MCP process writes protocol messages to stdout; service diagnostics go to its local log. Global clients must explicitly identify the producing session or leave cards unassigned; an arbitrary focused pane is never used. If relative paths are used, supply `context.cwd` or launch MCP from the right working directory.
+Add the printed `mcpServers.feedr` entry to your MCP client's configuration. It launches `feedr mcp` over stdio. Tool names: `feedr_post`, `feedr_update`, `feedr_list`, `feedr_get`, `feedr_sessions`. The MCP process writes protocol messages to stdout; service diagnostics go to its local log. A session lookup is not required to publish. Supply known `context.cwd`, `context.agent` and `context.native_session_id` for standalone session attribution, or an explicit known `session_id`; an arbitrary focused pane is never used.
 
-Agent guidance: [integrations/agents/INSTRUCTIONS.md](integrations/agents/INSTRUCTIONS.md). An optional herdr plugin action is in `integrations/herdr/`; it requires `feedr` on PATH. No existing agent configuration is changed automatically.
+Agent guidance: [integrations/agents/INSTRUCTIONS.md](integrations/agents/INSTRUCTIONS.md). An optional herdr plugin action is in `integrations/herdr/`; it requires `feedr` on PATH. Agent configuration changes only when you choose **Enable publishing** or **Disconnect**. The CLI equivalent is `feedr agent-setup enable --client codex` (or `claude`), with `--no-reminders` to install only MCP and the policy; `status` and `remove` inspect or disconnect. `--config-dir /absolute/path` targets a custom profile.
 
 ## How it works
 
@@ -201,7 +209,7 @@ python3 scripts/smoke.py target/debug/feedr
 python3 scripts/media-smoke.py target/debug/feedr
 ```
 
-The smoke test uses an isolated directory and checks broker restart recovery, concurrent publishers, CLI deduplication, MCP initialization/tool calls, post updates and stale revision rejection. It cleans up its own child processes.
+The smoke test uses isolated directories and checks broker restart recovery, concurrent publishers, CLI deduplication, MCP initialization/tool calls, post updates and stale revision rejection. It also installs integrations into synthetic client profiles and exercises standalone publication, native session attribution, bounded completion reminders, revision checks and offline behavior with discovery off. It cleans up its own child processes.
 
 It also checks opt-in mention ingestion, durable dismissal, explicit synthetic-session binding, and partial JSONL tailing without scanning real user panes. Media smoke checks generate temporary PDF/video fixtures and exercise the real Poppler/libmpv backends; supply an output directory as a second argument to retain fixtures for manual UI testing. CI sets `FEEDR_TEST_NULL_AUDIO=1` for an audio sink without hardware; normal playback uses the system audio output. CI configuration is not evidence of a completed Linux runtime check.
 

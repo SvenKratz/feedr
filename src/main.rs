@@ -19,6 +19,18 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Connect agents and install publishing instructions across projects.
+    AgentSetup {
+        #[command(subcommand)]
+        command: AgentSetupCommand,
+    },
+    #[command(hide = true)]
+    AgentHook {
+        #[arg(long, value_enum)]
+        client: feedr::agent_setup::Agent,
+        #[arg(long, value_parser = ["session-start", "stop"])]
+        event: String,
+    },
     /// Install a user-level feedr command and configure the shell's PATH.
     InstallCli {
         #[arg(long)]
@@ -159,6 +171,30 @@ enum DiscoveryCommand {
     UnwatchLog {
         path: PathBuf,
     },
+}
+#[derive(Subcommand)]
+enum AgentSetupCommand {
+    Status {
+        #[arg(long, value_enum)]
+        client: feedr::agent_setup::Agent,
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+    },
+    Enable {
+        #[arg(long, value_enum)]
+        client: feedr::agent_setup::Agent,
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+        #[arg(long)]
+        no_reminders: bool,
+    },
+    Remove {
+        #[arg(long, value_enum)]
+        client: feedr::agent_setup::Agent,
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+    },
+    Test,
 }
 fn discovery_command(client: &Client, command: DiscoveryCommand) -> Result<()> {
     use feedr::discovery::{Config, Ingested, Input, LogSource};
@@ -346,6 +382,52 @@ fn main() -> Result<()> {
         return print(feedr::update::Github::new()?.latest()?);
     }
     let paths = Paths::new(cli.data_dir)?;
+    if let Some(Commands::AgentHook { client, event }) = &cli.command {
+        let mut text = String::new();
+        let result = (|| -> Result<Value> {
+            std::io::stdin()
+                .take(1024 * 1024 + 1)
+                .read_to_string(&mut text)?;
+            anyhow::ensure!(text.len() <= 1024 * 1024, "Hook input exceeds limit");
+            feedr::agent_hook::handle(
+                *client,
+                event,
+                &paths.root,
+                &serde_json::from_str::<Value>(&text)?,
+            )
+        })();
+        return print(result.unwrap_or_else(|_| json!({})));
+    }
+    if let Some(Commands::AgentSetup { command }) = cli.command {
+        use feedr::agent_setup::{self, Profile};
+        let exe = std::env::current_exe()?.canonicalize()?;
+        return match command {
+            AgentSetupCommand::Status { client, config_dir } => print(agent_setup::inspect(
+                &Profile::locate(client, config_dir)?,
+                &exe,
+                &paths.root,
+            )),
+            AgentSetupCommand::Enable {
+                client,
+                config_dir,
+                no_reminders,
+            } => print(agent_setup::configure(
+                &Profile::locate(client, config_dir)?,
+                &exe,
+                &paths.root,
+                !no_reminders,
+                true,
+            )?),
+            AgentSetupCommand::Remove { client, config_dir } => print(agent_setup::configure(
+                &Profile::locate(client, config_dir)?,
+                &exe,
+                &paths.root,
+                false,
+                false,
+            )?),
+            AgentSetupCommand::Test => print(agent_setup::test_post(&paths.root)?),
+        };
+    }
     if matches!(cli.command, Some(Commands::Serve)) {
         return broker::serve(paths);
     }
@@ -365,6 +447,8 @@ fn main() -> Result<()> {
         Commands::Discovery { command } => discovery_command(&client, command),
         Commands::Start => print(client.call::<Value>("ping", json!({}))?),
         Commands::MediaCheck { .. }
+        | Commands::AgentSetup { .. }
+        | Commands::AgentHook { .. }
         | Commands::InstallCli { .. }
         | Commands::UpdateCheck
         | Commands::UpdateApply { .. }

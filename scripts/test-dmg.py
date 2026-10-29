@@ -33,6 +33,12 @@ with tempfile.TemporaryDirectory(prefix='feedr-dmg-test-') as directory:
         install = subprocess.run([str(app / 'Contents/MacOS/feedr'), 'install-cli', '--no-modify-path', '--bin-dir', str(cli)], capture_output=True, text=True)
         assert install.returncode != 0 and 'Applications' in install.stderr, install.stderr
         assert not cli.exists()
+        profile = Path(directory) / 'codex-profile'
+        data = Path(directory) / 'data'
+        setup_args = ['--data-dir', str(data), 'agent-setup', 'enable', '--client', 'codex', '--config-dir', str(profile)]
+        setup = subprocess.run([str(app / 'Contents/MacOS/feedr')] + setup_args, capture_output=True, text=True)
+        assert setup.returncode != 0 and 'disk image' in setup.stderr, setup.stderr
+        assert not profile.exists()
         installed = Path(directory) / 'Applications/Feedr.app'
         installed.parent.mkdir()
         shutil.copytree(app, installed)
@@ -40,6 +46,10 @@ with tempfile.TemporaryDirectory(prefix='feedr-dmg-test-') as directory:
         assert result['profiles'] == []
         assert (cli / 'feedr').is_symlink()
         assert subprocess.check_output([str(cli / 'feedr'), '--version'], text=True).strip() == 'feedr ' + version
-        print('PASS: mounted DMG/app verified; CLI refuses the disk image and installs from a writable app copy without touching shell profiles')
+        setup = json.loads(subprocess.check_output([str(installed / 'Contents/MacOS/feedr')] + setup_args, text=True))
+        assert setup['connection'] and setup['instructions'] and setup['reminders'], setup
+        command = tomllib.loads((profile / 'config.toml').read_text())['mcp_servers']['feedr']['command']
+        assert Path(command).resolve() == (installed / 'Contents/MacOS/feedr').resolve()
+        print('PASS: mounted DMG/app verified; CLI and agent setup refuse the disk image and install from a writable app copy using isolated profiles')
     finally:
         subprocess.run(['hdiutil', 'detach', str(mount)], check=True)

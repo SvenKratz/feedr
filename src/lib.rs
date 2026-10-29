@@ -1,3 +1,5 @@
+pub mod agent_hook;
+pub mod agent_setup;
 pub mod broker;
 pub mod cli_install;
 pub mod discovery;

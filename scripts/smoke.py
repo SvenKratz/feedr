@@ -161,3 +161,5 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
                     child.kill()
                     child.wait(timeout=5)
         log.close()
+
+subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name("agent-smoke.py")), binary], check=True)
