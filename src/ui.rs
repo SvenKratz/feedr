@@ -641,7 +641,12 @@ impl App {
         let active_session = self.active_session().map(str::to_owned);
         egui::SidePanel::left("sessions")
             .exact_width(224.)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(16))
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin {
+                left: 10,
+                right: 10,
+                top: 12,
+                bottom: 12,
+            }))
             .show(ctx, |ui| {
                 ui.add_space(8.);
                 ui.label(RichText::new("Your feed").strong().size(16.));
@@ -718,32 +723,23 @@ impl App {
                 egui::ScrollArea::vertical()
                     .id_salt(("session_scroll", self.session_view))
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.;
                         let mut previous_group = None;
                         for session in &sessions {
                             let group = session_list::group(session);
                             if self.session_view == session_list::View::Grouped
                                 && previous_group != Some(group)
                             {
-                                ui.add_space(8.);
-                                ui.label(
-                                    RichText::new(ellipsize(
-                                        session_list::group_label(session),
-                                        24,
-                                    ))
-                                    .strong()
-                                    .size(12.)
-                                    .color(MUTED),
-                                )
-                                .on_hover_text(format!(
-                                    "{}\n{}\n{}",
-                                    session_list::group_label(session),
-                                    session.context.host,
-                                    session
-                                        .context
-                                        .herdr_socket
-                                        .as_deref()
-                                        .unwrap_or("Local posts"),
-                                ));
+                                if previous_group.is_some() {
+                                    ui.add_space(5.);
+                                }
+                                if group == session_list::Group::Saved {
+                                    ui.label(
+                                        RichText::new(session_list::group_label(session))
+                                            .size(11.)
+                                            .color(MUTED),
+                                    );
+                                }
                                 previous_group = Some(group);
                             }
                             ui.push_id(&session.id, |ui| {
@@ -753,42 +749,8 @@ impl App {
                                 let highlighted = active || filtered;
                                 let color =
                                     session_color::resolve(&session.id, &self.session_colors);
-                                let text = format!(
-                                    "{} {}\n{}",
-                                    session_list::status_label(session),
-                                    session.context.agent,
-                                    ellipsize(&session.context.label, 26)
-                                );
-                                let response = ui.add_sized(
-                                    [ui.available_width(), 38.],
-                                    egui::Button::new(RichText::new(text).size(11.).color(INK))
-                                        .selected(highlighted)
-                                        .fill(if highlighted {
-                                            color.highlighted()
-                                        } else {
-                                            color.sidebar()
-                                        })
-                                        .stroke(egui::Stroke::new(
-                                            if active { 2.0_f32 } else { 1.0_f32 },
-                                            if highlighted {
-                                                color.accent
-                                            } else {
-                                                color.border()
-                                            },
-                                        ))
-                                        .corner_radius(4),
-                                );
-                                ui.painter().rect_filled(
-                                    egui::Rect::from_min_max(
-                                        response.rect.min + egui::vec2(0., 6.),
-                                        egui::pos2(
-                                            response.rect.left() + 3.,
-                                            response.rect.bottom() - 6.,
-                                        ),
-                                    ),
-                                    2.,
-                                    color.accent,
-                                );
+                                let response =
+                                    session_list::row(ui, session, color, highlighted, now());
                                 if self.reveal_session.as_deref() == Some(&session.id) {
                                     response.scroll_to_me(Some(egui::Align::Center));
                                     self.reveal_session = None;
@@ -827,13 +789,43 @@ impl App {
                                     }
                                 });
                                 if response
-                                    .on_hover_text(format!(
-                                        "{}\n{}\n{}\n{} · Right-click for feed and color options",
-                                        session.context.label,
-                                        session.context.cwd,
-                                        session.status,
-                                        color.name
-                                    ))
+                                    .on_hover_ui(|ui| {
+                                        ui.set_max_width(320.);
+                                        ui.label(
+                                            RichText::new(session_list::name(session)).strong(),
+                                        );
+                                        if session.context.label != session_list::name(session) {
+                                            ui.add(egui::Label::new(&session.context.label).wrap());
+                                        }
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&session.context.cwd)
+                                                    .small()
+                                                    .color(MUTED),
+                                            )
+                                            .wrap(),
+                                        );
+                                        ui.label(format!(
+                                            "{} · {}",
+                                            session_list::status_label(session),
+                                            session_list::agent(session)
+                                        ));
+                                        ui.label(
+                                            RichText::new(if session.last_activity_at.is_some() {
+                                                format!(
+                                                    "Last observed activity {}",
+                                                    session_list::recency(
+                                                        session.last_activity_at,
+                                                        now()
+                                                    )
+                                                )
+                                            } else {
+                                                "No activity timestamp observed yet".into()
+                                            })
+                                            .small()
+                                            .color(MUTED),
+                                        );
+                                    })
                                     .clicked()
                                 {
                                     self.open_feed(FeedTarget::Session(session.id.clone()));

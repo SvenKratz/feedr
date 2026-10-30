@@ -304,6 +304,14 @@ pub struct Session {
     pub pane_order: usize,
     #[serde(default)]
     pub state_change_seq: u64,
+    /// Herdr's workspace/tab presentation, separate from the detailed pane title.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub display_agent: Option<String>,
+    /// Latest observed agent state change or publication, never a poll/last-seen time.
+    #[serde(default)]
+    pub last_activity_at: Option<i64>,
 }
 #[derive(Clone, Default, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default)]

@@ -360,6 +360,9 @@ fn existing_session_json_loads_without_sidebar_ordering_metadata() {
         "workspace_order",
         "pane_order",
         "state_change_seq",
+        "display_name",
+        "display_agent",
+        "last_activity_at",
     ] {
         legacy.as_object_mut().unwrap().remove(field);
     }
@@ -379,11 +382,116 @@ fn existing_session_json_loads_without_sidebar_ordering_metadata() {
     assert_eq!(restored.state_change_seq, 0);
     assert_eq!(restored.workspace_order, 0);
     assert_eq!(restored.pane_order, 0);
+    assert_eq!(restored.display_name, None);
+    assert_eq!(restored.display_agent, None);
+    assert_eq!(restored.last_activity_at, None);
     // The next authoritative refresh enriches the existing row in place.
     store
         .reconcile("/herdr/socket", vec![session.clone()])
         .unwrap();
     assert_eq!(store.sessions().unwrap()[0], session);
+}
+#[test]
+fn herdr_display_names_match_workspace_and_custom_tabs_and_polls_do_not_refresh_recency() {
+    let mut input = snapshot(Some("native-a"), "term1");
+    input["workspaces"][0]["label"] = json!("glyph and glyphaudio");
+    input["panes"][0]["title"] = json!("Build glyph visualization library | glyph_vis");
+    input["tabs"] = json!([{"tab_id":"w1:t1","workspace_id":"w1","number":1,"label":"1"}]);
+    input["agents"] = json!([{"pane_id":"w1:p1","agent_status":"working","state_change_seq":10,"display_agent":"codex"}]);
+    let mut first = sessions_from_snapshot("/herdr/socket", &input, &[]);
+    assert_eq!(
+        first[0].display_name.as_deref(),
+        Some("glyph and glyphaudio")
+    );
+    assert_eq!(first[0].display_agent.as_deref(), Some("codex"));
+    assert_eq!(
+        first[0].context.label,
+        "Build glyph visualization library | glyph_vis"
+    );
+    assert_eq!(first[0].last_activity_at, None);
+    let known_activity = now() - 600_000;
+    first[0].last_activity_at = Some(known_activity);
+    input["agents"][0]["focused"] = json!(true);
+    input["agents"][0]["revision"] = json!(900);
+    input["panes"][0]["title"] = json!("Renamed task");
+    let polled = sessions_from_snapshot("/herdr/socket", &input, &first);
+    assert_eq!(polled[0].last_activity_at, Some(known_activity));
+    input["tabs"][0]["label"] = json!("audio");
+    input["agents"][0]["state_change_seq"] = json!(11);
+    input["agents"][0]["agent_status"] = json!("done");
+    let changed = sessions_from_snapshot("/herdr/socket", &input, &polled);
+    assert_eq!(
+        changed[0].display_name.as_deref(),
+        Some("glyph and glyphaudio · audio")
+    );
+    assert!(changed[0].last_activity_at.unwrap() > known_activity);
+    input["agents"][0]["state_change_seq"] = json!(1); // Herdr restarted, not new activity.
+    let reset = sessions_from_snapshot("/herdr/socket", &input, &changed);
+    assert_eq!(reset[0].last_activity_at, changed[0].last_activity_at);
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("db");
+    let mut store = Store::open(&db).unwrap();
+    store.reconcile("/herdr/socket", changed.clone()).unwrap();
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    let restored = store.sessions().unwrap();
+    let reconnected = sessions_from_snapshot("/herdr/socket", &input, &restored);
+    assert_eq!(reconnected[0].last_activity_at, changed[0].last_activity_at);
+}
+
+#[test]
+fn publication_recency_survives_restart_and_read_pin_and_retry_do_not_fake_activity() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("db");
+    let mut store = Store::open(&db).unwrap();
+    let first = store.post(post(dir.path())).unwrap();
+    let published = store.sessions().unwrap()[0].last_activity_at;
+    assert_eq!(published, Some(first.created_at));
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let mut flags = update(&first);
+    flags.read = Some(true);
+    flags.pinned = Some(true);
+    flags.archived = Some(true);
+    let marked = store.update(flags).unwrap();
+    assert_eq!(store.sessions().unwrap()[0].last_activity_at, published);
+    store.post(post(dir.path())).unwrap();
+    assert_eq!(store.sessions().unwrap()[0].last_activity_at, published);
+    let mut content = update(&marked);
+    content.body = Some("A revised deliverable".into());
+    let revised = store.update(content).unwrap();
+    let activity = store.sessions().unwrap()[0].last_activity_at;
+    assert_eq!(activity, Some(revised.updated_at));
+    assert!(activity > published);
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    assert_eq!(store.sessions().unwrap()[0].last_activity_at, activity);
+    // Legacy JSON can still show a real publication age without a timestamp migration.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mut legacy = serde_json::to_value(&store.sessions().unwrap()[0]).unwrap();
+    legacy.as_object_mut().unwrap().remove("last_activity_at");
+    conn.execute("UPDATE sessions SET json=?1", [legacy.to_string()])
+        .unwrap();
+    assert_eq!(
+        store.sessions().unwrap()[0].last_activity_at,
+        Some(first.created_at)
+    );
+}
+
+#[test]
+fn terminal_only_sessions_keep_observed_activity_after_broker_restart() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("db");
+    let input = snapshot(None, "terminal-only");
+    let mut sessions = sessions_from_snapshot("/herdr/socket", &input, &[]);
+    sessions[0].last_activity_at = Some(now() - 900_000);
+    let expected = sessions[0].clone();
+    let mut store = Store::open(&db).unwrap();
+    store.reconcile("/herdr/socket", sessions).unwrap();
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    let restored = sessions_from_snapshot("/herdr/socket", &input, &store.sessions().unwrap());
+    assert_eq!(restored[0].id, expected.id);
+    assert_eq!(restored[0].last_activity_at, expected.last_activity_at);
 }
 #[test]
 fn authoritative_snapshots_mark_closed_sessions_offline() {

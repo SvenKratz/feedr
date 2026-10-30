@@ -52,10 +52,6 @@ pub(super) const PALETTE: [SessionColor; 6] = [
 ];
 
 impl SessionColor {
-    pub fn border(self) -> Color32 {
-        self.background.lerp_to_gamma(self.accent, 0.3)
-    }
-
     pub fn highlighted(self) -> Color32 {
         self.background.lerp_to_gamma(self.accent, 0.14)
     }

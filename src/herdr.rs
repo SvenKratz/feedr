@@ -264,6 +264,7 @@ pub fn sessions_from_snapshot(socket: &str, snapshot: &Value, old: &[Session]) -
         .flatten()
         .filter_map(|agent| Some((agent["pane_id"].as_str()?, agent)))
         .collect();
+    let tabs: Vec<_> = snapshot["tabs"].as_array().into_iter().flatten().collect();
     snapshot["panes"]
         .as_array()
         .into_iter()
@@ -318,12 +319,56 @@ pub fn sessions_from_snapshot(socket: &str, snapshot: &Value, old: &[Session]) -
                 .and_then(|agent| text(agent, "agent_status"))
                 .or_else(|| text(p, "agent_status"))
                 .unwrap_or_else(|| "unknown".into());
+            let tab = tabs.iter().find(|t| t["tab_id"] == p["tab_id"]);
+            let display_name = workspace_info.map(|(name, _)| {
+                let tab = tab.filter(|t| {
+                    t["custom_label"].as_bool().unwrap_or_else(|| {
+                        t["number"].as_u64().is_some_and(|number| {
+                            t["label"]
+                                .as_str()
+                                .is_some_and(|label| label != number.to_string())
+                        })
+                    }) || tabs
+                        .iter()
+                        .filter(|other| other["workspace_id"] == p["workspace_id"])
+                        .count()
+                        > 1
+                });
+                match tab
+                    .and_then(|t| t["label"].as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    Some(tab) => format!("{name} · {tab}"),
+                    None => (*name).to_string(),
+                }
+            });
+            let display_agent = agent_info.and_then(|info| {
+                ["display_agent", "name", "agent"]
+                    .into_iter()
+                    .find_map(|field| text(info, field).filter(|s| !s.trim().is_empty()))
+            });
+            // Terminal-only identities are deterministic too. On broker restart
+            // they are initially offline, so identity matching above may not
+            // select a predecessor even though the same durable ID exists.
+            let activity_previous = previous.or_else(|| old.iter().find(|s| s.id == id));
+            let last_activity_at = activity_previous.and_then(|old| {
+                let changed = (old.status != "offline" && old.status != status)
+                    || (old.state_change_seq > 0 && state_change_seq > old.state_change_seq);
+                if changed {
+                    old.last_activity_at.max(Some(now()))
+                } else {
+                    old.last_activity_at
+                }
+            });
             Some(Session {
                 id,
                 workspace_label: workspace_info.map(|(label, _)| (*label).to_string()),
                 workspace_order: workspace_info.map_or(0, |(_, order)| *order),
                 pane_order,
                 state_change_seq,
+                display_name,
+                display_agent,
+                last_activity_at,
                 context: Context {
                     host: local_host(),
                     herdr_socket: Some(socket.into()),

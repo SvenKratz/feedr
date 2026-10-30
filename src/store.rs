@@ -92,9 +92,19 @@ impl Store {
         Ok(())
     }
     pub fn sessions(&self) -> Result<Vec<Session>> {
-        let mut stmt = self.db.prepare("SELECT json FROM sessions ORDER BY id")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        // Backfill legacy sessions from durable publications without inventing
+        // an activity time for sessions first discovered during this startup.
+        let mut stmt = self.db.prepare("SELECT sessions.json, MAX(posts.created_at) FROM sessions LEFT JOIN posts ON posts.session_id=sessions.id GROUP BY sessions.id ORDER BY sessions.id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+        })?;
+        rows.map(|r| {
+            let (json, published) = r?;
+            let mut session: Session = serde_json::from_str(&json)?;
+            session.last_activity_at = session.last_activity_at.max(published);
+            Ok(session)
+        })
+        .collect()
     }
     pub fn save_session(&mut self, s: &Session) -> Result<()> {
         let json = serde_json::to_string(s)?;
@@ -167,6 +177,9 @@ impl Store {
             workspace_order: 0,
             pane_order: 0,
             state_change_seq: 0,
+            display_name: None,
+            display_agent: None,
+            last_activity_at: None,
         };
         self.save_session(&s)?;
         Ok(s)
@@ -240,6 +253,7 @@ impl Store {
         }
         let tx = self.db.transaction()?;
         Self::write_post(&tx, &p, idem.as_deref())?;
+        Self::write_activity(&tx, &p.session_id, p.updated_at)?;
         if let Some(key) = &idem {
             tx.execute(
                 "INSERT OR IGNORE INTO post_keys VALUES(?1,?2)",
@@ -274,6 +288,8 @@ impl Store {
         Ok(serde_json::from_str(&json)?)
     }
     pub fn update(&mut self, u: UpdateInput) -> Result<Post> {
+        let publication =
+            u.title.is_some() || u.body.is_some() || u.resources.is_some() || u.readiness.is_some();
         let mut p = self.get(&u.id)?;
         ensure!(
             p.revision == u.expected_revision,
@@ -309,9 +325,23 @@ impl Store {
         p.updated_at = now();
         let tx = self.db.transaction()?;
         Self::write_post(&tx, &p, None)?;
+        if publication {
+            Self::write_activity(&tx, &p.session_id, p.updated_at)?;
+        }
         Self::bump(&tx)?;
         tx.commit()?;
         Ok(p)
+    }
+    fn write_activity(db: &Connection, id: &str, timestamp: i64) -> Result<()> {
+        let json: String =
+            db.query_row("SELECT json FROM sessions WHERE id=?1", [id], |r| r.get(0))?;
+        let mut session: Session = serde_json::from_str(&json)?;
+        session.last_activity_at = session.last_activity_at.max(Some(timestamp));
+        db.execute(
+            "UPDATE sessions SET json=?1 WHERE id=?2",
+            params![serde_json::to_string(&session)?, id],
+        )?;
+        Ok(())
     }
     fn types(p: &Post) -> String {
         format!(

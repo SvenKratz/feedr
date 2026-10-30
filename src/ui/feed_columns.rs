@@ -24,13 +24,13 @@ impl Target {
                 .iter()
                 .find(|s| &s.id == id)
                 .map(|s| {
-                    let agent = match s.context.agent.to_lowercase().as_str() {
+                    let agent = match super::session_list::agent(s).to_lowercase().as_str() {
                         "claude" => "Claude",
                         "codex" => "Codex",
-                        _ => &s.context.agent,
+                        _ => super::session_list::agent(s),
                     };
                     let label = super::ellipsize(
-                        &s.context.label,
+                        super::session_list::name(s),
                         max_chars.saturating_sub(agent.chars().count() + 3).max(3),
                     );
                     format!("{label} ({agent})")
