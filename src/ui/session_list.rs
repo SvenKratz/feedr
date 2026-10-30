@@ -117,7 +117,7 @@ pub(super) fn row(
         painter.rect_stroke(
             rect.shrink(0.5),
             3.,
-            egui::Stroke::new(1., color.accent),
+            egui::Stroke::new(1.0_f32, color.accent),
             egui::StrokeKind::Inside,
         );
         painter.rect_filled(
@@ -141,7 +141,7 @@ pub(super) fn row(
         "blocked" => Color32::from_rgb(235, 166, 142),
         _ => MUTED,
     };
-    let stroke = egui::Stroke::new(1.4, ink);
+    let stroke = egui::Stroke::new(1.4_f32, ink);
     match status {
         "idle" => {
             painter.circle_stroke(center, 3.5, stroke);
