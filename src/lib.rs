@@ -10,5 +10,6 @@ pub mod model;
 pub mod platform;
 pub mod setup;
 pub mod store;
+pub mod telemetry;
 pub mod ui;
 pub mod update;

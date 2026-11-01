@@ -3,6 +3,7 @@ use crate::{
     agent_setup::{self, Agent, Profile, Status},
     cli_install,
     setup::McpSetup,
+    telemetry,
 };
 use eframe::egui::{self, RichText};
 use std::{
@@ -18,6 +19,7 @@ pub(super) struct Setup {
     was_open: bool,
     selected: [bool; 2],
     reminders: bool,
+    share_usage: bool,
     statuses: Vec<Status>,
     events: Option<mpsc::Receiver<AgentEvent>>,
     detected: bool,
@@ -37,7 +39,8 @@ impl Setup {
     pub fn new(data: PathBuf) -> Self {
         Self {
             exe: std::env::current_exe().unwrap_or_default(),
-            first_launch: !agent_setup::completed(&data),
+            first_launch: !agent_setup::completed(&data) || telemetry::should_ask(&data),
+            share_usage: telemetry::decision(&data) == Some(true),
             data: data.clone(),
             was_open: false,
             selected: [false; 2],
@@ -92,6 +95,9 @@ impl Setup {
                     for (agent, result) in results {
                         match result {
                             Ok(status) => {
+                                if status.configured() {
+                                    telemetry::count(&format!("agent_setup_{}", agent.key()));
+                                }
                                 self.statuses.retain(|s| s.agent != agent);
                                 self.statuses.push(status);
                             }
@@ -144,7 +150,7 @@ impl Setup {
                     ui.label("Connect an agent to receive finished reports, media, builds and preview links.");
                     ui.label(RichText::new("Works across projects. Herdr and discovery are optional.").small().color(MUTED));
                     ui.add_space(10.);
-                    egui::ScrollArea::vertical().max_height((ctx.available_rect().height() - 210.).clamp(160., 560.)).show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height((ctx.available_rect().height() - if telemetry::available() { 270. } else { 210. }).clamp(160., 560.)).show(ui, |ui| {
                         self.agent_rows(ui);
                         ui.add_space(8.);
                         ui.add_enabled_ui(self.events.is_none(), |ui| {
@@ -175,6 +181,10 @@ impl Setup {
                             Err(error) => { ui.label(error); }
                         });
                     });
+                    if telemetry::available() {
+                        ui.add_space(8.);
+                        self.usage_statistics(ui);
+                    }
                     if let Some(message) = &self.message { ui.add_space(8.); ui.label(RichText::new(message).color(BLUE)); }
                     ui.add_space(10.);
                     ui.horizontal_wrapped(|ui| {
@@ -191,7 +201,13 @@ impl Setup {
                     });
                 });
             if !window_open || close_requested {
-                match agent_setup::finish(&self.data) {
+                // Closing without opting in records a decline, so Feedr asks only once.
+                let declined = if telemetry::should_ask(&self.data) {
+                    telemetry::set_enabled(&self.data, false)
+                } else {
+                    Ok(())
+                };
+                match declined.and_then(|()| agent_setup::finish(&self.data)) {
                     Ok(()) => {
                         *open = false;
                         self.was_open = false;
@@ -205,6 +221,9 @@ impl Setup {
         if let Some(rx) = &self.installing
             && let Ok(result) = rx.try_recv()
         {
+            if result.is_ok() {
+                telemetry::count("cli_installed");
+            }
             self.installed = Some(result);
             self.installing = None;
         }
@@ -309,6 +328,40 @@ impl Setup {
                     })
                     .collect(),
             )
+        });
+    }
+    fn usage_statistics(&mut self, ui: &mut egui::Ui) {
+        let blocked = telemetry::blocked_by();
+        let mut share = self.share_usage && blocked.is_none();
+        if ui
+            .add_enabled(
+                blocked.is_none(),
+                egui::Checkbox::new(&mut share, "Share anonymous usage statistics"),
+            )
+            .changed()
+        {
+            match telemetry::set_enabled(&self.data, share) {
+                Ok(()) => {
+                    self.share_usage = share;
+                    telemetry::wake();
+                }
+                Err(error) => {
+                    self.message = Some(format!("Could not save your choice: {error:#}"));
+                }
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(match blocked {
+                    Some(variable) => format!("Off while {variable} is set."),
+                    None => "Each installation is counted once, anonymously. Daily statistics are off unless you turn them on: a random install ID, version, OS and action counts; never titles, paths, links, file contents or host names.".into(),
+                })
+                .small()
+                .color(MUTED),
+            );
+            if ui.small_button("Details").clicked() {
+                let _ = open::that_detached(telemetry::DETAILS_URL);
+            }
         });
     }
     fn agent_rows(&mut self, ui: &mut egui::Ui) {

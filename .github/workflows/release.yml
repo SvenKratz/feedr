@@ -22,6 +22,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
+      POSTHOG_TOKEN: ${{ secrets.POSTHOG_TOKEN }}
+      POSTHOG_REGION: ${{ secrets.POSTHOG_REGION }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -61,6 +63,8 @@ jobs:
     container: rust:1.95-bookworm
     env:
       DEBIAN_FRONTEND: noninteractive
+      POSTHOG_TOKEN: ${{ secrets.POSTHOG_TOKEN }}
+      POSTHOG_REGION: ${{ secrets.POSTHOG_REGION }}
     steps:
       - name: Native build, media and desktop test dependencies
         run: |

@@ -192,9 +192,13 @@ feedr stop             # Gracefully stop the local feed service
 
 To publish a release, update Cargo's version and `packaging/release-notes.md`, then push the matching `vVERSION` tag. The workflow builds macOS and Linux for aarch64 and x86_64, validates installers and media, and creates source archives from the tagged tree. It uploads a draft, verifies all ten packages and their GitHub SHA-256 digests, then publishes the complete release. Published releases are never overwritten. See [release build instructions](packaging/RELEASING.md) for local packaging and optional Developer ID signing/notarization.
 
+## Usage statistics
+
+Feedr counts each installation once with an anonymous event (a random install ID, version, OS and install type) the first time the app or the local service runs. Daily usage statistics, counts of actions such as posts received and resources opened, are off unless you opt in when first asked, or later under **?**. Titles, paths, links, file contents and host names are never sent. `feedr telemetry status|enable|disable` shows or changes the choice, and `DO_NOT_TRACK=1` or `FEEDR_TELEMETRY=0` turns off everything, including the install count. Builds from source contain no PostHog token and never send anything. See [TELEMETRY.md](TELEMETRY.md) for every event and field.
+
 ## Data and diagnostics
 
-Default macOS location: `~/Library/Application Support/feedr/`. Linux: `$XDG_DATA_HOME/feedr/`, normally `~/.local/share/feedr/`. The directory contains `feedr.sqlite3`, `feedr.sock`, `broker.lock`, `broker.log`, `update.lock`, update status/installer logs under `updates/`, and optional demo files/socket configuration. The directory is user-only and the socket is mode 0600. `--data-dir DIR` or `FEEDR_DATA_DIR` selects an isolated store; use a short path because Unix sockets have path-length limits.
+Default macOS location: `~/Library/Application Support/feedr/`. Linux: `$XDG_DATA_HOME/feedr/`, normally `~/.local/share/feedr/`. The directory contains `feedr.sqlite3`, `feedr.sock`, `broker.lock`, `broker.log`, `update.lock`, update status/installer logs under `updates/`, your usage-statistics choice, install ID and unsent counts under `telemetry/`, and optional demo files/socket configuration. The directory is user-only and the socket is mode 0600. `--data-dir DIR` or `FEEDR_DATA_DIR` selects an isolated store; use a short path because Unix sockets have path-length limits.
 
 The local service is not exposed on TCP and requires no cloud account. Any process running as your user may access the local service. Remove demo cards with Archive. To stop a testing service, stop its `feedr … serve` process; the next client starts it again. During development, restart an existing broker after rebuilding so the service and GUI use the same version.
 

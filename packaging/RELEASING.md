@@ -4,6 +4,8 @@ Set `Cargo.toml`/`Cargo.lock` to the next semantic version and update `packaging
 
 The release has two DMGs, two macOS ZIP updater archives, two `.deb` installers, two Linux tar updater archives, and source in tar.gz/ZIP formats. It includes per-asset checksums and a combined `SHA256SUMS`. Source uses `git archive` from the release commit and includes `Cargo.lock`; it does not vendor crates, so a source build needs public registry access. Binary packages include dependency notices and license texts from the locked native dependency graph and Rust standard library.
 
+Official builds embed the PostHog project token for the anonymous install count and opt-in usage statistics ([TELEMETRY.md](../TELEMETRY.md)). `build.rs` reads `POSTHOG_TOKEN` and `POSTHOG_REGION` (`US Cloud`, `EU Cloud` or an `https://` host) from the environment, falling back to an untracked `.env`. The release workflow passes the repository secrets of the same names; `scripts/set-posthog-secrets.py` copies them from `.env` with `gh`. It accepts only `phc_` project tokens, never personal API keys. Without a token the build sends nothing.
+
 ## macOS
 
 Build on the desired native architecture with Rust 1.95, Xcode command line tools and Python 3.12:

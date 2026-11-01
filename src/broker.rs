@@ -118,6 +118,7 @@ pub fn serve(paths: Paths) -> Result<()> {
     ));
     herdr::start(state.clone(), paths.root.clone());
     crate::discovery::start(state.clone());
+    crate::telemetry::start(&paths.root, false);
     let clients = Arc::new(AtomicUsize::new(0));
     let stopping = Arc::new(AtomicBool::new(false));
     eprintln!("Feedr broker listening on {}", paths.socket.display());
@@ -158,6 +159,7 @@ pub fn serve(paths: Paths) -> Result<()> {
     while clients.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
+    crate::telemetry::persist();
     Ok(())
 }
 fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
@@ -224,7 +226,13 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
                 json!({"version":env!("CARGO_PKG_VERSION"),"protocol":1,"sequence":state.store.sequence()?})
             }
             "post" => {
-                serde_json::to_value(state.store.post(serde_json::from_value(request.params)?)?)?
+                let started = now();
+                let post = state.store.post(serde_json::from_value(request.params)?)?;
+                // Idempotent repeats return the original post and are not counted again.
+                if post.created_at >= started {
+                    crate::telemetry::record_post(&post);
+                }
+                serde_json::to_value(post)?
             }
             "update" => serde_json::to_value(
                 state

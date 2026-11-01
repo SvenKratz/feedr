@@ -115,6 +115,7 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, client: Client) -> Self {
         let setup = setup::Setup::new(client.paths.root.clone());
+        crate::telemetry::start(&client.paths.root, true);
         let ctx = &cc.egui_ctx;
         egui_extras::install_image_loaders(ctx);
         let updates = updates::Updates::new(
@@ -406,6 +407,12 @@ impl App {
             read: None,
         };
         change(&mut u);
+        if u.pinned == Some(true) {
+            crate::telemetry::count("pinned");
+        }
+        if u.archived == Some(true) {
+            crate::telemetry::count("archived");
+        }
         let _ = self.commands.send(Command::Update(u));
     }
     fn active_session(&self) -> Option<&str> {
@@ -433,6 +440,7 @@ impl App {
         self.selected = Some(id.clone());
         self.resource = 0;
         self.preview_key.clear();
+        crate::telemetry::count("posts_viewed");
         if let Some(p) = self.snapshot.posts.iter().find(|p| p.id == id && !p.read) {
             self.edit(p, |u| u.read = Some(true));
         }
@@ -1322,6 +1330,7 @@ impl App {
         }
     }
     fn open_externally(&mut self, p: &Post, r: &Resource) {
+        crate::telemetry::count("opened_externally");
         self.action(p, r, false);
         if !p.read {
             self.edit(p, |u| u.read = Some(true));
@@ -1329,6 +1338,7 @@ impl App {
     }
     fn action(&mut self, p: &Post, r: &Resource, reveal: bool) {
         let result = if reveal {
+            crate::telemetry::count("revealed_in_folder");
             platform::reveal(p, r)
         } else {
             platform::open_resource(p, r)
@@ -1773,6 +1783,7 @@ impl eframe::App for App {
 impl Drop for App {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        crate::telemetry::persist();
     }
 }
 

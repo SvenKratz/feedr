@@ -54,6 +54,11 @@ enum Commands {
     Stop,
     /// Fetch the latest GitHub release and notes without opening a window.
     UpdateCheck,
+    /// Show or change anonymous install counting and opt-in usage statistics.
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
     #[command(hide = true)]
     UpdateApply {
         #[arg(long)]
@@ -171,6 +176,15 @@ enum DiscoveryCommand {
     UnwatchLog {
         path: PathBuf,
     },
+}
+#[derive(Subcommand)]
+enum TelemetryCommand {
+    /// Print the recorded choice, install ID, pending events and an example event.
+    Status,
+    /// Share daily anonymous usage statistics from this data directory.
+    Enable,
+    /// Stop sharing, discard unsent statistics, and skip the install count if it has not been sent.
+    Disable,
 }
 #[derive(Subcommand)]
 enum AgentSetupCommand {
@@ -382,6 +396,18 @@ fn main() -> Result<()> {
         return print(feedr::update::Github::new()?.latest()?);
     }
     let paths = Paths::new(cli.data_dir)?;
+    if let Some(Commands::Telemetry { command }) = &cli.command {
+        use feedr::telemetry;
+        if !matches!(command, TelemetryCommand::Status) {
+            anyhow::ensure!(
+                telemetry::available(),
+                "This build has no usage statistics endpoint and never sends any"
+            );
+            paths.prepare()?;
+            telemetry::set_enabled(&paths.root, matches!(command, TelemetryCommand::Enable))?;
+        }
+        return print(telemetry::status(&paths.root));
+    }
     if let Some(Commands::AgentHook { client, event }) = &cli.command {
         let mut text = String::new();
         let result = (|| -> Result<Value> {
@@ -451,6 +477,7 @@ fn main() -> Result<()> {
         | Commands::AgentHook { .. }
         | Commands::InstallCli { .. }
         | Commands::UpdateCheck
+        | Commands::Telemetry { .. }
         | Commands::UpdateApply { .. }
         | Commands::UpdateVerify { .. }
         | Commands::Stop => unreachable!(),
