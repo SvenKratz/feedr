@@ -1,6 +1,6 @@
 # Release builds
 
-Set `Cargo.toml`/`Cargo.lock` to the next semantic version and update `packaging/release-notes.md`. Commit and push, then create and push the matching `vVERSION` tag. Never move a published release tag or replace its assets. `workflow_dispatch` on main can validate packages without publishing. The tag workflow publishes only when all four architecture jobs and the source job pass.
+Set `Cargo.toml`/`Cargo.lock` to the next semantic version and update `packaging/release-notes.md`. Commit and push, then create and push the matching `vVERSION` tag. Never move a published release tag or replace its assets. `workflow_dispatch` on main can validate packages without publishing. The tag workflow publishes only when stable Rust checks on macOS/Linux, all four architecture jobs and the source job pass.
 
 The release has two DMGs, two macOS ZIP updater archives, two `.deb` installers, two Linux tar updater archives, and source in tar.gz/ZIP formats. It includes per-asset checksums and a combined `SHA256SUMS`. Source uses `git archive` from the release commit and includes `Cargo.lock`; it does not vendor crates, so a source build needs public registry access. Binary packages include dependency notices and license texts from the locked native dependency graph and Rust standard library.
 

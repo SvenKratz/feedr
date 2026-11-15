@@ -1119,7 +1119,7 @@ impl App {
                 let row = egui::Frame::new()
                     .fill(if fresh { color.highlighted() } else { PANEL })
                     .stroke(if fresh {
-                        egui::Stroke::new(1., color.accent)
+                        egui::Stroke::new(1.0_f32, color.accent)
                     } else {
                         egui::Stroke::NONE
                     })
@@ -1171,7 +1171,7 @@ impl App {
                     ui.painter().vline(
                         row.response.rect.left() + 1.,
                         row.response.rect.y_range(),
-                        egui::Stroke::new(3., color.accent),
+                        egui::Stroke::new(3.0_f32, color.accent),
                     );
                     row.response.on_hover_text("New in this session update");
                 }
