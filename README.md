@@ -87,7 +87,7 @@ The sidebar has **Priority** and **Grouped** views, matching herdr. Priority ord
 
 Feeds can sit side by side in independently scrolling columns. Right-click a session and choose **Add Feed Column**, or click a session to open/focus its column. The **+** above the feeds opens session columns and restores the default **All sessions** catchall. Close any column with **×**, including the last one; this changes only the layout. Drag a tab handle to reorder columns. Session tabs show the live herdr name and agent, with the full identity on hover. Open columns and their order survive normal restarts.
 
-Search, resource-type filters, Pinned and Archived apply across the open columns. Each column fetches and paginates its own results, so a busy catchall cannot crowd out a quieter session. Click a tab or resource row to focus that column for J/K and arrow-key navigation. Navigation visits each attachment in order and brings it into view. Filenames occupy one line, with a preview excerpt or location beneath and compact unread/pinned/discovery indicators. Post counts live in the tab header; hover for unread counts. Media opens in the shared sidebar.
+Search and resource-type filters apply across the open columns. Each column fetches and paginates its own results, so a busy catchall cannot crowd out a quieter session. Click a tab or resource row to focus that column for J/K and arrow-key navigation. Navigation visits each attachment in order and brings it into view. Filenames occupy one line, with a preview excerpt or location beneath and compact unread/pinned/discovery indicators. Post counts live in the tab header; hover for unread counts. Media opens in the shared sidebar.
 
 ## Native media dependencies
 
@@ -202,7 +202,14 @@ Default macOS location: `~/Library/Application Support/feedr/`. Linux: `$XDG_DAT
 
 The local service is not exposed on TCP and requires no cloud account. Any process running as your user may access the local service. Remove demo cards with Archive. To stop a testing service, stop its `feedr … serve` process; the next client starts it again. During development, restart an existing broker after rebuilding so the service and GUI use the same version.
 
-Keyboard: Ctrl+Alt+F summons the running app on macOS/X11 when registration is available. On Wayland use the desktop launcher. Cmd/Ctrl K searches; J/K or arrow keys select artifact rows; P pins; Esc closes the preview. New cards are held behind a “new resources” button while a selected card is being read.
+Keyboard: Ctrl+Alt+F summons the running app on macOS/X11 when registration is available. On Wayland use the desktop launcher. Cmd/Ctrl K searches; J/K or arrow keys select artifact rows; P pins; Esc closes the preview. New artifacts appear automatically in every matching open column, including while a preview is selected. The selected attachment stays open; no filter click is needed. Broker notifications trigger immediate queries, with a two-second reconciliation pass for delayed files and missed notifications; failed snapshot requests retry automatically.
+
+Selecting a session in the left sidebar reveals its latest items and highlights
+new resources in that session's column since the previous visit. A new completion
+checkmark starts a new update batch when selected; revisiting the same update
+keeps its highlights. Background refreshes do not consume that boundary, and
+items arriving after the click remain part of the next update. View boundaries
+are saved across restarts; the first visit highlights unread resources.
 
 ## Verification
 
@@ -216,6 +223,8 @@ python3 scripts/media-smoke.py target/debug/feedr
 ```
 
 The smoke test uses isolated directories and checks broker restart recovery, concurrent publishers, CLI deduplication, MCP initialization/tool calls, post updates and stale revision rejection. It also installs integrations into synthetic client profiles and exercises standalone publication, native session attribution, bounded completion reminders, revision checks and offline behavior with discovery off. It cleans up its own child processes.
+
+Live-feed regressions exercise the desktop's background worker, event receiver and headless egui renderer against an isolated Unix socket and SQLite store. They cover selected previews, catchall/session isolation, images mentioned or explicitly published, bursts, late attachments, file creation/removal/recreation, failed queries, reconnects, missed notifications, sequence rollback and publications between column queries. Thumbnail tests cover partial images, stale decode results, atomic replacement with preserved timestamps and queue saturation. The process smoke additionally publishes images through real MCP, checks change notifications and image filters, and waits for a synthetic watched-log image to become ready. These checks do not scan the user's real agent panes.
 
 It also checks opt-in mention ingestion, durable dismissal, explicit synthetic-session binding, and partial JSONL tailing without scanning real user panes. Media smoke checks generate temporary PDF/video fixtures and exercise the real Poppler/libmpv backends; supply an output directory as a second argument to retain fixtures for manual UI testing. CI sets `FEEDR_TEST_NULL_AUDIO=1` for an audio sink without hardware; normal playback uses the system audio output. CI configuration is not evidence of a completed Linux runtime check.
 

@@ -43,6 +43,15 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
         assert result.returncode != 0, "Expected a failing request"
         return result.stderr
 
+    def broker_call(method, params):
+        with socket.socket(socket.AF_UNIX) as stream:
+            stream.settimeout(8)
+            stream.connect(root + "/feedr.sock")
+            stream.sendall((json.dumps({"version": 1, "method": method, "params": params}) + "\n").encode())
+            reply = json.loads(stream.makefile().readline())
+            assert reply["ok"], reply
+            return reply["result"]
+
     def stop(child):
         child.terminate()
         child.wait(timeout=5)
@@ -143,11 +152,71 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
         while cli("list", "--search", log_url)["total"] != 1:
             assert time.monotonic()<deadline, "Completed log mention was not discovered"
             time.sleep(0.1)
+
+        # Real MCP -> broker change notification -> the desktop's snapshot
+        # queries. Keep discovery strictly bound to the synthetic session.
+        image_path = pathlib.Path(root, "live-image.png")
+        image_bytes = pathlib.Path(__file__).resolve().parent.parent.joinpath("packaging/feedr.png").read_bytes()
+        image_path.write_bytes(image_bytes)
+        query = {"kind": "Image", "available_only": True, "search": "Live image regression"}
+        before = broker_call("snapshot", query)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            changed = pool.submit(broker_call, "wait", {"after": before["sequence"], "timeout_ms": 4000})
+            result = rpc({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"feedr_post","arguments":{
+                "title":"Live image regression", "session_id":session,
+                "resources":[{"uri":str(image_path)}], "idempotency_key":"live-image-regression"
+            }}})
+            assert not result.get("isError"), result
+            image_post = json.loads(result["content"][0]["text"])
+            assert changed.result(timeout=6)["sequence"] > before["sequence"]
+        for scope in ({}, {"session_id": session}):
+            snapshot = broker_call("snapshot", {**query, **scope})
+            assert [p["id"] for p in snapshot["posts"]] == [image_post["id"]]
+
+        late_path = pathlib.Path(root, "late-image.png")
+        result = rpc({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"feedr_update","arguments":{
+            "id":image_post["id"], "expected_revision":image_post["revision"],
+            "resources":[{"uri":str(late_path)}, {"uri":str(image_path)}]
+        }}})
+        assert not result.get("isError"), result
+        image_post = json.loads(result["content"][0]["text"])
+        assert len(broker_call("snapshot", query)["posts"][0]["resources"]) == 1
+        late_path.write_bytes(image_bytes)
+        assert len(broker_call("snapshot", query)["posts"][0]["resources"]) == 2
+        assert cli("get", image_post["id"])["revision"] == image_post["revision"]
+        late_path.unlink()
+        image_path.unlink()
+        assert broker_call("snapshot", query)["total"] == 0
+        image_path.write_bytes(image_bytes)
+        assert broker_call("snapshot", query)["total"] == 1
+
+        watched_image = pathlib.Path(root, "watched-image.png")
+        record = json.dumps({"type":"assistant","message":{"role":"assistant","content":[{
+            "type":"text", "text":f"Created: [image](<{watched_image}>)"
+        }]}})
+        with log_path.open("a") as log_file:
+            log_file.write(record + "\n")
+        deadline = time.monotonic() + 10
+        while cli("list", "--search", "watched-image.png")["total"] != 1:
+            assert time.monotonic() < deadline, "Completed image mention was not discovered"
+            time.sleep(0.1)
+        watched_query = {"kind":"Image", "available_only":True, "search":"watched-image.png", "session_id":session}
+        assert broker_call("snapshot", watched_query)["total"] == 0
+        watched_image.write_bytes(image_bytes)
+        deadline = time.monotonic() + 10
+        while True:
+            snapshot = broker_call("snapshot", watched_query)
+            if snapshot["total"] == 1 and snapshot["posts"][0]["readiness"] == "ready":
+                break
+            assert time.monotonic() < deadline, "Late discovered image did not become ready"
+            time.sleep(0.1)
         cli("discovery", "disable")
         assert cli("stop")["stopping"]
         broker.wait(timeout=12)
         broker = launch_broker()
         assert cli("get", one["id"])["pinned"]
+        assert broker_call("snapshot", query)["posts"][0]["id"] == image_post["id"]
+        print("PASS: live MCP image notifications, catchall/session filters, late attachments, removal/recreation, watched image readiness and restart")
         print("PASS: opt-in discovery, durable deduplication/dismissal, session binding and partial JSONL tailing")
         print("PASS: graceful service shutdown preserves acknowledged posts across restart")
         print("PASS: concurrent CLI posts, deduplication, revision conflicts, restart recovery, MCP handshake and tool calls")

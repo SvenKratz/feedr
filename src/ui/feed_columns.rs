@@ -99,8 +99,8 @@ impl Layout {
 #[derive(Default)]
 pub(super) struct Feed {
     pub snapshot: Snapshot,
-    pub pending: Option<Snapshot>,
     pub limit: usize,
+    pub reveal_latest: bool,
 }
 impl Feed {
     pub fn query(&self, filters: &FeedQuery, target: &Target) -> FeedQuery {
@@ -108,28 +108,6 @@ impl Feed {
             session_id: target.session_id().map(str::to_owned),
             limit: self.limit,
             ..filters.clone()
-        }
-    }
-    pub fn receive(&mut self, snapshot: Snapshot, reading: bool) {
-        let additions = snapshot
-            .posts
-            .iter()
-            .any(|p| !self.snapshot.posts.iter().any(|old| old.id == p.id));
-        if reading && additions && !self.snapshot.posts.is_empty() {
-            self.snapshot.posts.retain_mut(|post| {
-                if let Some(new) = snapshot.posts.iter().find(|p| p.id == post.id) {
-                    *post = new.clone();
-                    true
-                } else {
-                    false
-                }
-            });
-            self.snapshot.total = snapshot.total;
-            self.snapshot.unread = snapshot.unread;
-            self.pending = Some(snapshot);
-        } else {
-            self.snapshot = snapshot;
-            self.pending = None;
         }
     }
 }

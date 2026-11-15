@@ -1,11 +1,12 @@
 //! Resource surfaces are the primary click targets in the feed.
-use super::{BLUE, INK, MUTED, Preview, age, load_preview, opens_in_sidebar};
+use super::{BLUE, INK, MUTED, Preview, age, load_preview, opens_in_sidebar, resource_text};
 use crate::model::{Post, Resource, ResourceKind};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::{
     collections::HashMap,
     fs,
+    os::unix::fs::MetadataExt,
     sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime},
@@ -19,7 +20,18 @@ pub(super) struct RowOptions {
     pub selected: bool,
     pub render_markdown: bool,
 }
-type Stamp = Option<(Option<SystemTime>, u64)>;
+pub(super) type Stamp = Option<(Option<SystemTime>, u64, u64, u64)>;
+
+// Size catches writes within one filesystem timestamp; identity also catches
+// atomic replacements that preserve the previous size and modification time.
+pub(super) fn stamp(post: &Post, resource: &Resource) -> Stamp {
+    if !post.context.is_local() {
+        return None;
+    }
+    fs::metadata(&resource.target)
+        .ok()
+        .map(|m| (m.modified().ok(), m.len(), m.dev(), m.ino()))
+}
 struct Job {
     key: String,
     stamp: Stamp,
@@ -111,13 +123,7 @@ impl Artifacts {
         });
         entry.seen = frame;
         if entry.checked.elapsed() >= Duration::from_secs(1) {
-            let stamp = if post.context.is_local() {
-                fs::metadata(&r.target)
-                    .ok()
-                    .map(|m| (m.modified().ok(), m.len()))
-            } else {
-                None
-            };
+            let stamp = stamp(post, r);
             if stamp != entry.stamp {
                 entry.stamp = stamp;
                 entry.queued = false;
@@ -198,7 +204,18 @@ impl Artifacts {
                 Vec2::new(46., 32.),
             );
             let icon_rect = Rect::from_center_size(visual.center(), Vec2::splat(21.));
-            let mut caption = resource_caption(r);
+            let left = visual.right() + 8.;
+            let caption_width = (rect.right() - left - 5.).max(0.);
+            let readiness = if p.readiness == "ready" {
+                String::new()
+            } else {
+                format!("{} · ", p.readiness)
+            };
+            let mut caption = resource_caption(
+                ui,
+                r,
+                (caption_width - resource_text::width(ui, &readiness, 11.)).max(0.),
+            );
             if inline {
                 let entry = self.entry(ui, p, r);
                 match &entry.content {
@@ -211,6 +228,9 @@ impl Artifacts {
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
                             Color32::WHITE,
                         );
+                        if r.file_type() == "Video" {
+                            video_badge(&painter, visual);
+                        }
                     }
                     Content::Text { rendered, source } => {
                         icon(&painter, icon_rect, r);
@@ -233,17 +253,19 @@ impl Artifacts {
             } else {
                 icon(&painter, icon_rect, r);
             }
-            if p.readiness != "ready" {
-                caption = format!("{} · {caption}", p.readiness);
-            }
-            let left = visual.right() + 8.;
+            caption = format!("{readiness}{caption}");
             let name_width = (rect.right() - left - 86.).max(0.);
+            let name = if r.kind == ResourceKind::Url {
+                r.name.clone()
+            } else {
+                resource_text::tail(ui, &r.name, 13., name_width)
+            };
             paint_line(
                 ui,
                 &painter,
                 Pos2::new(left, rect.top() + 6.),
                 name_width,
-                &r.name,
+                &name,
                 13.,
                 INK,
             );
@@ -251,7 +273,7 @@ impl Artifacts {
                 ui,
                 &painter,
                 Pos2::new(left, rect.top() + 23.),
-                (rect.right() - left - 5.).max(0.),
+                caption_width,
                 &caption,
                 11.,
                 MUTED,
@@ -335,7 +357,7 @@ impl Artifacts {
 }
 
 use std::path::Path;
-fn resource_caption(resource: &Resource) -> String {
+fn resource_caption(ui: &egui::Ui, resource: &Resource, width: f32) -> String {
     if resource.kind == ResourceKind::Url {
         return resource.target.clone();
     }
@@ -343,7 +365,14 @@ fn resource_caption(resource: &Resource) -> String {
         .parent()
         .and_then(|p| p.to_str())
         .unwrap_or(&resource.target);
-    format!("{} · {location}", resource.file_type())
+    let prefix = format!("{} · ", resource.file_type());
+    let location = resource_text::tail(
+        ui,
+        location,
+        11.,
+        (width - resource_text::width(ui, &prefix, 11.)).max(0.),
+    );
+    format!("{prefix}{location}")
 }
 fn paint_line(
     ui: &egui::Ui,
@@ -437,6 +466,37 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
                 }
             }
         }
+        ResourceKind::File if resource.file_type() == "Audio" => {
+            for (x, y) in [(0.27, 0.79), (0.73, 0.66)] {
+                p.add(egui::Shape::ellipse_filled(
+                    at(x, y),
+                    Vec2::new(r.width() * 0.16, r.height() * 0.11),
+                    BLUE,
+                ));
+            }
+            p.line_segment([at(0.41, 0.77), at(0.41, 0.19)], stroke);
+            p.line_segment([at(0.87, 0.64), at(0.87, 0.06)], stroke);
+            p.line_segment([at(0.41, 0.19), at(0.87, 0.06)], stroke);
+            p.line_segment([at(0.41, 0.32), at(0.87, 0.19)], stroke);
+        }
+        ResourceKind::File if resource.file_type() == "Video" => {
+            p.rect_stroke(
+                Rect::from_min_max(at(0.04, 0.16), at(0.96, 0.84)),
+                2.,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            p.add(egui::Shape::convex_polygon(
+                vec![at(0.40, 0.34), at(0.40, 0.66), at(0.67, 0.50)],
+                BLUE,
+                Stroke::NONE,
+            ));
+            for x in [0.16, 0.84] {
+                for y in [0.31, 0.50, 0.69] {
+                    p.rect_filled(Rect::from_center_size(at(x, y), r.size() * 0.07), 0., BLUE);
+                }
+            }
+        }
         ResourceKind::File => {
             let points = vec![
                 at(0.17, 0.04),
@@ -458,9 +518,193 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
     }
 }
 
+fn video_badge(p: &egui::Painter, thumbnail: Rect) {
+    let center = thumbnail.right_bottom() - Vec2::splat(6.);
+    p.circle_filled(center, 6., super::PANEL);
+    p.circle_stroke(center, 6., Stroke::new(1.0_f32, BLUE));
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            center + Vec2::new(-1.5, -2.5),
+            center + Vec2::new(-1.5, 2.5),
+            center + Vec2::new(2.5, 0.),
+        ],
+        BLUE,
+        Stroke::NONE,
+    ));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::excerpt;
+    use super::*;
+
+    fn image_post(path: &std::path::Path) -> (Post, Resource) {
+        let post = crate::ui::tests::post();
+        let mut resource = post.resources[1].clone();
+        resource.target = path.to_string_lossy().into();
+        resource.original = resource.target.clone();
+        (post, resource)
+    }
+
+    fn write_image(path: &std::path::Path, width: u32) {
+        image::RgbaImage::from_pixel(width, 4, image::Rgba([80, 160, 180, 255]))
+            .save(path)
+            .unwrap();
+    }
+
+    fn visit(cache: &mut Artifacts, ctx: &egui::Context, post: &Post, resources: &[Resource]) {
+        cache.receive(ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for resource in resources {
+                    cache.entry(ui, post, resource);
+                }
+            });
+        });
+    }
+
+    fn until(cache: &mut Artifacts, ctx: &egui::Context, post: &Post, r: &Resource, image: bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            visit(cache, ctx, post, std::slice::from_ref(r));
+            let entry = &cache.entries[&format!("{}:{}", post.context.host, r.target)];
+            if (image && matches!(entry.content, Content::Image(_)))
+                || (!image && matches!(entry.content, Content::Unavailable(_)))
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "thumbnail did not converge");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn recheck(cache: &mut Artifacts) {
+        for entry in cache.entries.values_mut() {
+            entry.checked = Instant::now() - Duration::from_secs(2);
+        }
+    }
+
+    #[test]
+    fn thumbnail_recovers_from_missing_partial_removed_and_recreated_images() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("image.png");
+        let (post, resource) = image_post(&path);
+        let ctx = egui::Context::default();
+        let mut cache = Artifacts::new();
+        until(&mut cache, &ctx, &post, &resource, false);
+        fs::write(&path, b"incomplete PNG").unwrap();
+        recheck(&mut cache);
+        until(&mut cache, &ctx, &post, &resource, false);
+        write_image(&path, 8);
+        recheck(&mut cache);
+        until(&mut cache, &ctx, &post, &resource, true);
+        fs::remove_file(&path).unwrap();
+        recheck(&mut cache);
+        until(&mut cache, &ctx, &post, &resource, false);
+        write_image(&path, 12);
+        recheck(&mut cache);
+        until(&mut cache, &ctx, &post, &resource, true);
+    }
+
+    #[test]
+    fn atomic_image_replacement_invalidates_thumbnail_even_with_preserved_mtime() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("image.png");
+        write_image(&path, 8);
+        let (post, resource) = image_post(&path);
+        let original = fs::metadata(&path).unwrap();
+        let ctx = egui::Context::default();
+        let mut cache = Artifacts::new();
+        until(&mut cache, &ctx, &post, &resource, true);
+        let key = format!("{}:{}", post.context.host, resource.target);
+        let previous = cache.entries[&key].stamp;
+        let replacement = root.path().join("replacement.png");
+        write_image(&replacement, 12);
+        fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(original.modified().unwrap()))
+            .unwrap();
+        fs::rename(replacement, &path).unwrap();
+        assert_ne!(stamp(&post, &resource), previous);
+        recheck(&mut cache);
+        until(&mut cache, &ctx, &post, &resource, true);
+        assert!(
+            matches!(&cache.entries[&key].content, Content::Image(texture) if texture.size() == [12, 4])
+        );
+    }
+
+    #[test]
+    fn stale_thumbnail_results_cannot_replace_a_newer_image() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("image.png");
+        write_image(&path, 8);
+        let (post, resource) = image_post(&path);
+        let current = stamp(&post, &resource);
+        let key = format!("{}:{}", post.context.host, resource.target);
+        let (jobs, _rx) = mpsc::sync_channel(1);
+        let (tx, results) = mpsc::channel();
+        let mut cache = Artifacts {
+            entries: HashMap::from([(
+                key.clone(),
+                Entry {
+                    stamp: current,
+                    checked: Instant::now(),
+                    queued: true,
+                    content: Content::Loading,
+                    seen: 0,
+                },
+            )]),
+            jobs,
+            results,
+        };
+        let ctx = egui::Context::default();
+        tx.send(Finished {
+            key: key.clone(),
+            stamp: None,
+            preview: Preview::Error("obsolete decode failure".into()),
+        })
+        .unwrap();
+        cache.receive(&ctx);
+        assert!(matches!(cache.entries[&key].content, Content::Loading));
+        tx.send(Finished {
+            key: key.clone(),
+            stamp: current,
+            preview: Preview::Image(egui::ColorImage::filled([8, 4], BLUE)),
+        })
+        .unwrap();
+        cache.receive(&ctx);
+        assert!(matches!(cache.entries[&key].content, Content::Image(_)));
+    }
+
+    #[test]
+    fn a_burst_larger_than_the_thumbnail_queue_eventually_loads_every_image() {
+        let root = tempfile::tempdir().unwrap();
+        let (post, _) = image_post(&root.path().join("unused.png"));
+        let resources: Vec<_> = (0..96)
+            .map(|i| {
+                let path = root.path().join(format!("image-{i}.png"));
+                write_image(&path, 8);
+                image_post(&path).1
+            })
+            .collect();
+        let mut cache = Artifacts::new();
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            visit(&mut cache, &ctx, &post, &resources);
+            if cache.entries.len() == 96
+                && cache
+                    .entries
+                    .values()
+                    .all(|e| matches!(e.content, Content::Image(_)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "thumbnail queue lost work");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
 
     #[test]
     fn markdown_excerpts_hide_metadata_and_markup_but_can_show_source() {

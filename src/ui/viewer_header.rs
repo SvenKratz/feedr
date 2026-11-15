@@ -1,7 +1,7 @@
 //! Compact artifact identity and actions; the document gets the visual emphasis.
-use super::{BLUE, INK, LINE, MUTED};
+use super::{BLUE, INK, LINE, MUTED, resource_text};
 use crate::model::{Post, Resource, ResourceKind};
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke, Vec2};
 
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
@@ -49,6 +49,22 @@ impl Header<'_> {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_width(width);
+                        let name = if r.kind == ResourceKind::Url {
+                            r.name.clone()
+                        } else {
+                            resource_text::tail(
+                                ui,
+                                &r.name,
+                                15.,
+                                (width
+                                    - if self.post.resources.len() > 1 {
+                                        30.
+                                    } else {
+                                        0.
+                                    })
+                                .max(0.),
+                            )
+                        };
                         if self.post.resources.len() > 1 {
                             // A file switcher, without a second box competing with the toolbar.
                             let visuals = &mut ui.style_mut().visuals;
@@ -58,7 +74,7 @@ impl Header<'_> {
                             let mut index = self.index;
                             let combo = egui::ComboBox::from_id_salt("viewer-attachment")
                                 .width(width)
-                                .selected_text(RichText::new(&r.name).size(15.).strong().color(INK))
+                                .selected_text(RichText::new(&name).size(15.).strong().color(INK))
                                 .truncate()
                                 .show_ui(ui, |ui| {
                                     for (i, resource) in self.post.resources.iter().enumerate() {
@@ -77,7 +93,7 @@ impl Header<'_> {
                             }
                         } else {
                             ui.add(
-                                egui::Label::new(RichText::new(&r.name).size(15.).strong())
+                                egui::Label::new(RichText::new(&name).size(15.).strong())
                                     .truncate(),
                             )
                             .on_hover_text(format!("{}\n{}", r.name, self.post.title));
@@ -110,7 +126,11 @@ impl Header<'_> {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.set_width(width);
-                        let text = compact_location(ui, &r.target, width);
+                        let text = if r.kind == ResourceKind::Url {
+                            r.target.clone()
+                        } else {
+                            resource_text::tail(ui, &r.target, 11., width)
+                        };
                         ui.add(
                             egui::Label::new(RichText::new(text).size(11.).color(MUTED)).truncate(),
                         )
@@ -267,41 +287,6 @@ fn copy_button(ui: &mut egui::Ui, label: &str, value: Option<&str>, salt: impl s
             ui.ctx().data_mut(|data| data.insert_temp(id, time + 1.5));
         }
     });
-}
-
-fn compact_location(ui: &egui::Ui, text: &str, width: f32) -> String {
-    let font = FontId::monospace(11.);
-    let fits = |text: &str| {
-        ui.fonts_mut(|fonts| {
-            fonts
-                .layout_no_wrap(text.into(), font.clone(), MUTED)
-                .size()
-                .x
-                <= width
-        })
-    };
-    if fits(text) || text.starts_with("https://") || text.starts_with("http://") {
-        return text.to_owned();
-    }
-    for (index, _) in text.char_indices().filter(|(_, c)| *c == '/') {
-        let candidate = format!("…{}", &text[index..]);
-        if fits(&candidate) {
-            return candidate;
-        }
-    }
-    let chars: Vec<_> = text.chars().collect();
-    let mut low = 0;
-    let mut high = chars.len();
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        let candidate = format!("…{}", chars[chars.len() - mid..].iter().collect::<String>());
-        if fits(&candidate) {
-            low = mid;
-        } else {
-            high = mid - 1;
-        }
-    }
-    format!("…{}", chars[chars.len() - low..].iter().collect::<String>())
 }
 
 fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {

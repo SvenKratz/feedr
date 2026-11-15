@@ -8,7 +8,7 @@ pub struct Store {
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Connection::open(path)?;
+        let mut db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         ensure!(
@@ -33,17 +33,36 @@ impl Store {
         )?;
         if !has_types {
             db.execute_batch("ALTER TABLE posts ADD COLUMN types TEXT NOT NULL DEFAULT ''; ")?;
-            let rows: Vec<(String, String)> = db
+        }
+        // Classification can expand without changing post JSON or the schema.
+        // Rebuild the derived filter cache once for older installations; keep
+        // user_version compatible so an updater rollback can still read history.
+        let types_version: Option<i64> = db
+            .query_row(
+                "SELECT value FROM state WHERE key='resource_types_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if !has_types || types_version.unwrap_or_default() < 2 {
+            let tx = db.transaction()?;
+            let rows: Vec<(String, String)> = tx
                 .prepare("SELECT id,json FROM posts")?
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<std::result::Result<_, _>>()?;
+            let mut changed = 0;
             for (id, json) in rows {
                 let p: Post = serde_json::from_str(&json)?;
-                db.execute(
-                    "UPDATE posts SET types=?1 WHERE id=?2",
+                changed += tx.execute(
+                    "UPDATE posts SET types=?1 WHERE id=?2 AND types!=?1",
                     params![Self::types(&p), id],
                 )?;
             }
+            tx.execute("INSERT INTO state VALUES('resource_types_version',2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+            if changed > 0 {
+                Self::bump(&tx)?;
+            }
+            tx.commit()?;
         }
         let has_discovery_type: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('posts') WHERE name='discovery_type')",

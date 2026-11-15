@@ -24,6 +24,84 @@ fn update(p: &Post) -> UpdateInput {
 }
 
 #[test]
+fn published_media_types_match_discovery_and_respect_resource_kinds() {
+    for (expected, extensions) in [
+        (
+            "Audio",
+            "mp3 wav flac m4a aac ogg oga opus aif aiff alac wma",
+        ),
+        ("Video", "mp4 mov mkv webm avi m4v mpg mpeg ogv"),
+    ] {
+        for extension in extensions.split_whitespace() {
+            let mut resource = Resource {
+                original: String::new(),
+                target: format!("/tmp/Long.Media.Name.{}", extension.to_uppercase()),
+                name: "Display name without an extension".into(),
+                kind: ResourceKind::File,
+            };
+            assert_eq!(resource.file_type(), expected);
+            assert_eq!(feedr::discovery::FileType::of(&resource).label(), expected);
+            resource.kind = ResourceKind::Folder;
+            assert_eq!(resource.file_type(), "Folder");
+            resource.kind = ResourceKind::Url;
+            assert_eq!(resource.file_type(), "Web");
+        }
+    }
+}
+
+#[test]
+fn older_media_type_indexes_are_backfilled_without_changing_history() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("db");
+    let mut store = Store::open(&db).unwrap();
+    let mut saved = Vec::new();
+    for (n, name) in ["song.mp3", "movie.AVI"].iter().enumerate() {
+        let mut input = post(dir.path());
+        input.idempotency_key = Some(format!("legacy-media-{n}"));
+        input.resources[0].uri = (*name).into();
+        saved.push(store.post(input).unwrap());
+    }
+    drop(store);
+    let legacy = rusqlite::Connection::open(&db).unwrap();
+    legacy
+        .execute("UPDATE posts SET types='|File|'", [])
+        .unwrap();
+    legacy
+        .execute("DELETE FROM state WHERE key='resource_types_version'", [])
+        .unwrap();
+    drop(legacy);
+    let store = Store::open(&db).unwrap();
+    for (kind, original) in ["Audio", "Video"].iter().zip(&saved) {
+        let result = store
+            .snapshot(&FeedQuery {
+                kind: Some((*kind).into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(result.total, 1, "saved {kind} did not enter its new filter");
+        assert_eq!(result.posts[0].id, original.id);
+        assert_eq!(result.posts[0].revision, original.revision);
+        assert_eq!(result.posts[0].created_at, original.created_at);
+    }
+    let sequence = store.sequence().unwrap();
+    drop(store);
+    let reopened = Store::open(&db).unwrap();
+    assert_eq!(
+        reopened.sequence().unwrap(),
+        sequence,
+        "backfill must be idempotent"
+    );
+    let legacy = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(
+        legacy
+            .query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap(),
+        4,
+        "type cache refresh must remain readable by the previous release"
+    );
+}
+
+#[test]
 fn acknowledged_posts_survive_reopen_and_retry() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("feed.sqlite");

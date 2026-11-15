@@ -225,7 +225,9 @@ impl Resource {
             "md" | "markdown" => "Markdown",
             "png" | "jpg" | "jpeg" | "gif" | "webp" => "Image",
             "pdf" => "PDF",
-            "mp4" | "mov" | "mkv" | "webm" => "Video",
+            "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v" | "mpg" | "mpeg" | "ogv" => "Video",
+            "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "aif" | "aiff"
+            | "alac" | "wma" => "Audio",
             _ => "File",
         }
     }

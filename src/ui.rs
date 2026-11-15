@@ -14,15 +14,20 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 mod artifact;
 mod feed_columns;
 use feed_columns::{Feed, Layout as ColumnLayout, Target as FeedTarget};
+mod live;
+#[cfg(test)]
+mod live_regressions;
 mod media;
+mod resource_text;
 mod session_color;
 mod session_list;
+mod session_updates;
 mod setup;
 mod updates;
 mod viewer_header;
@@ -43,6 +48,7 @@ enum Command {
 enum Event {
     Snapshot(FeedTarget, FeedQuery, Box<Snapshot>),
     Error(String),
+    FeedStatus(Option<String>),
 }
 enum Preview {
     Text(String),
@@ -92,8 +98,10 @@ struct App {
     reveal_artifact: bool,
     session_colors: HashMap<String, String>,
     session_view: session_list::View,
+    session_updates: session_updates::Updates,
     resource: usize,
     error: Option<String>,
+    feed_error: Option<String>,
     search_focus: bool,
     preview_key: String,
     preview_rx: Option<mpsc::Receiver<Preview>>,
@@ -139,6 +147,11 @@ impl App {
             .storage
             .and_then(|storage| eframe::get_value(storage, "feedr.session_view"))
             .unwrap_or_default();
+        let session_updates = session_updates::Updates::restore(
+            cc.storage
+                .and_then(|storage| eframe::get_value(storage, "feedr.session_updates"))
+                .unwrap_or_default(),
+        );
         let show_unavailable = cc
             .storage
             .and_then(|storage| eframe::get_value(storage, "feedr.show_unavailable"))
@@ -195,88 +208,7 @@ impl App {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let context = ctx.clone();
-        thread::spawn(move || {
-            let mut queries = subscriptions;
-            let mut refresh = true;
-            let mut sequence = -1;
-            let mut last_availability_refresh = Instant::now();
-            while !stopping.load(Ordering::Relaxed) {
-                while let Ok(command) = rx.try_recv() {
-                    match command {
-                        Command::Call(method, params) => {
-                            if let Err(error) = client.call::<serde_json::Value>(method, params) {
-                                let _ = event_tx.send(Event::Error(format!("{error:#}")));
-                            }
-                            refresh = true;
-                        }
-                        Command::Query(q) => {
-                            queries = q;
-                            refresh = true;
-                        }
-                        Command::Refresh => refresh = true,
-                        Command::Update(u) => {
-                            if let Err(e) = client
-                                .call::<Post>("update", serde_json::to_value(u).unwrap_or_default())
-                            {
-                                let _ = event_tx.send(Event::Error(e.to_string()));
-                            }
-                            refresh = true;
-                        }
-                    }
-                }
-                if queries.iter().any(|(_, query)| query.available_only)
-                    && last_availability_refresh.elapsed() >= Duration::from_secs(2)
-                {
-                    refresh = true;
-                }
-                if refresh {
-                    last_availability_refresh = Instant::now();
-                    // Still refresh session metadata when the user closes every column.
-                    let requests = if queries.is_empty() {
-                        vec![(
-                            FeedTarget::All,
-                            FeedQuery {
-                                limit: 1,
-                                ..FeedQuery::default()
-                            },
-                        )]
-                    } else {
-                        queries.clone()
-                    };
-                    for (index, (target, query)) in requests.into_iter().enumerate() {
-                        match client.snapshot(&query) {
-                            Ok(s) => {
-                                // Waiting from the first result also catches changes between queries.
-                                if index == 0 {
-                                    sequence = s.sequence;
-                                }
-                                let _ = event_tx.send(Event::Snapshot(target, query, Box::new(s)));
-                            }
-                            Err(e) => {
-                                let _ =
-                                    event_tx.send(Event::Error(format!("Feed unavailable: {e:#}")));
-                            }
-                        }
-                    }
-                    context.request_repaint();
-                    refresh = false;
-                }
-                match client
-                    .call::<serde_json::Value>("wait", json!({"after":sequence,"timeout_ms":200}))
-                {
-                    Ok(v) => {
-                        if v["sequence"].as_i64().unwrap_or(-1) != sequence {
-                            refresh = true;
-                        }
-                    }
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(500));
-                        let _ = client.ensure_running();
-                        refresh = true;
-                    }
-                }
-            }
-        });
+        thread::spawn(move || live::run(client, subscriptions, rx, event_tx, stopping, context));
         Self {
             setup,
             updates,
@@ -296,8 +228,10 @@ impl App {
             reveal_artifact: false,
             session_colors,
             session_view,
+            session_updates,
             resource: 0,
             error: None,
+            feed_error: None,
             search_focus: false,
             preview_key: String::new(),
             preview_rx: None,
@@ -344,7 +278,21 @@ impl App {
     }
     fn open_feed(&mut self, target: FeedTarget) {
         self.columns.open(target.clone());
-        self.reveal_column = Some(target);
+        self.reveal_column = Some(target.clone());
+        if let FeedTarget::Session(id) = &target {
+            let feed = self.feeds.entry(target.clone()).or_default();
+            feed.reveal_latest = true;
+            self.session_updates.open(
+                id,
+                self.snapshot
+                    .sessions
+                    .iter()
+                    .find(|session| &session.id == id),
+                &feed.snapshot.posts,
+                now(),
+            );
+            self.merge_posts();
+        }
         self.subscribe_columns();
     }
     fn close_feed(&mut self, target: &FeedTarget) {
@@ -505,6 +453,7 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Error(e) => self.error = Some(e),
+                Event::FeedStatus(error) => self.feed_error = error,
                 Event::Snapshot(target, query, snapshot) => {
                     self.snapshot.sessions = snapshot.sessions.clone();
                     self.snapshot.connections = snapshot.connections.clone();
@@ -516,11 +465,24 @@ impl App {
                     if query != feed.query(&self.query, &target) {
                         continue;
                     }
-                    let reading = self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|id| feed.snapshot.posts.iter().any(|p| &p.id == id));
-                    feed.receive(*snapshot, reading);
+                    // A sidebar click explicitly reveals the latest batch even
+                    // when an older artifact remains selected in this column.
+                    if let Some(id) = target.session_id() {
+                        self.session_updates.receive(id, &snapshot.posts);
+                    }
+                    let reviewing = target.session_id().is_some_and(|id| {
+                        snapshot.posts.iter().any(|post| {
+                            !feed.snapshot.posts.iter().any(|old| old.id == post.id)
+                                && post.resources.iter().any(|resource| {
+                                    self.session_updates.highlighted(id, post, &resource.target)
+                                })
+                        })
+                    });
+                    if reviewing {
+                        feed.reveal_latest = true;
+                    }
+                    // Selection owns the sidebar, never the freshness of a feed.
+                    feed.snapshot = *snapshot;
                     changed = true;
                 }
             }
@@ -530,8 +492,8 @@ impl App {
         }
     }
     fn prepare_preview(&mut self, ctx: &egui::Context, p: &Post, r: &Resource) {
-        let modified = fs::metadata(&r.target).and_then(|m| m.modified()).ok();
-        let key = format!("{}:{}:{modified:?}", p.context.host, r.target);
+        let stamp = artifact::stamp(p, r);
+        let key = format!("{}:{}:{stamp:?}", p.context.host, r.target);
         if key == self.preview_key {
             return;
         }
@@ -656,42 +618,6 @@ impl App {
                 bottom: 12,
             }))
             .show(ctx, |ui| {
-                ui.add_space(8.);
-                ui.label(RichText::new("Your feed").strong().size(16.));
-                ui.add_space(10.);
-                if ui
-                    .selectable_label(
-                        self.columns.active.as_ref() == Some(&FeedTarget::All)
-                            && !self.query.pinned_only
-                            && !self.query.archived,
-                        "All resources",
-                    )
-                    .clicked()
-                {
-                    let filters_changed = self.query.pinned_only || self.query.archived;
-                    self.query.pinned_only = false;
-                    self.query.archived = false;
-                    if filters_changed {
-                        self.send_query();
-                    }
-                    self.open_feed(FeedTarget::All);
-                }
-                if ui
-                    .selectable_label(self.query.pinned_only, "Pinned")
-                    .clicked()
-                {
-                    self.query.pinned_only = !self.query.pinned_only;
-                    self.query.archived = false;
-                    self.send_query();
-                }
-                if ui
-                    .selectable_label(self.query.archived, "Archived")
-                    .clicked()
-                {
-                    self.query.archived = !self.query.archived;
-                    self.send_query();
-                }
-                ui.add_space(22.);
                 ui.label(RichText::new("Agent sessions").color(MUTED).size(12.));
                 ui.add_space(4.);
                 let previous_view = self.session_view;
@@ -886,7 +812,8 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for kind in [
-                        "All", "Markdown", "Image", "PDF", "Video", "Web", "Folder", "File",
+                        "All", "Markdown", "Image", "PDF", "Video", "Audio", "Web", "Folder",
+                        "File",
                     ] {
                         let selected = self.query.kind.as_deref().unwrap_or("All") == kind;
                         if ui.selectable_label(selected, kind).clicked() {
@@ -909,11 +836,12 @@ impl App {
                         });
                     });
                 });
-                if let Some(error) = &self.error.clone() {
+                if let Some(error) = self.error.clone().or_else(|| self.feed_error.clone()) {
                     ui.horizontal_wrapped(|ui| {
                         ui.colored_label(Color32::from_rgb(235, 142, 145), error);
                         if ui.small_button("Dismiss").clicked() {
                             self.error = None;
+                            self.feed_error = None;
                         }
                     });
                 }
@@ -1124,66 +1052,48 @@ impl App {
                                 );
                             }
                         }
-                        let Some(feed) = self.feeds.get(target) else {
-                            return header.response.rect;
-                        };
-                        let count = feed
-                            .pending
-                            .as_ref()
-                            .map(|pending| {
-                                pending
-                                    .posts
-                                    .iter()
-                                    .filter(|p| {
-                                        !feed.snapshot.posts.iter().any(|old| old.id == p.id)
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0);
-                        if count > 0
-                            && ui
-                                .small_button(format!("{count} new resources — show latest"))
-                                .clicked()
-                        {
-                            let feed = self.feeds.get_mut(target).unwrap();
-                            feed.snapshot = feed.pending.take().unwrap();
-                            self.merge_posts();
-                        }
-                        egui::ScrollArea::vertical()
+                        let reveal_latest = self
+                            .feeds
+                            .get_mut(target)
+                            .is_some_and(|feed| std::mem::take(&mut feed.reveal_latest));
+                        let mut scroll = egui::ScrollArea::vertical()
                             .id_salt("posts")
                             .auto_shrink([false, false])
-                            .max_height(ui.available_height())
-                            .show(ui, |ui| {
-                                ui.set_width(width - 8.);
-                                let Some(feed) = self.feeds.get(target) else {
-                                    return;
-                                };
-                                let posts = feed.snapshot.posts.clone();
-                                let remaining = feed.snapshot.total.saturating_sub(posts.len());
-                                if posts.is_empty() {
-                                    ui.add_space(24.);
-                                    ui.label(if self.query.search.is_empty() {
-                                        "No resources in this feed yet."
-                                    } else {
-                                        "No matching resources."
-                                    });
-                                    if ui.button("Connect an agent").clicked() {
-                                        self.show_help = true;
-                                    }
+                            .max_height(ui.available_height());
+                        if reveal_latest {
+                            scroll = scroll.vertical_scroll_offset(0.);
+                        }
+                        scroll.show(ui, |ui| {
+                            ui.set_width(width - 8.);
+                            let Some(feed) = self.feeds.get(target) else {
+                                return;
+                            };
+                            let posts = feed.snapshot.posts.clone();
+                            let remaining = feed.snapshot.total.saturating_sub(posts.len());
+                            if posts.is_empty() {
+                                ui.add_space(24.);
+                                ui.label(if self.query.search.is_empty() {
+                                    "No resources in this feed yet."
+                                } else {
+                                    "No matching resources."
+                                });
+                                if ui.button("Connect an agent").clicked() {
+                                    self.show_help = true;
                                 }
-                                for post in posts {
-                                    self.card(ui, &post, target);
-                                }
-                                if remaining > 0
-                                    && ui
-                                        .button(format!("Load more ({remaining} remaining)"))
-                                        .clicked()
-                                {
-                                    let feed = self.feeds.get_mut(target).unwrap();
-                                    feed.limit = (feed.limit.max(200) + 200).min(2000);
-                                    self.subscribe_columns();
-                                }
-                            });
+                            }
+                            for post in posts {
+                                self.card(ui, &post, target);
+                            }
+                            if remaining > 0
+                                && ui
+                                    .button(format!("Load more ({remaining} remaining)"))
+                                    .clicked()
+                            {
+                                let feed = self.feeds.get_mut(target).unwrap();
+                                feed.limit = (feed.limit.max(200) + 200).min(2000);
+                                self.subscribe_columns();
+                            }
+                        });
                         header.response.rect
                     })
                     .inner
@@ -1202,8 +1112,17 @@ impl App {
                 continue;
             }
             ui.push_id((&p.id, index), |ui| {
-                egui::Frame::new()
-                    .fill(PANEL)
+                let fresh = target
+                    .session_id()
+                    .is_some_and(|id| self.session_updates.highlighted(id, p, &resource.target));
+                let color = session_color::resolve(&p.session_id, &self.session_colors);
+                let row = egui::Frame::new()
+                    .fill(if fresh { color.highlighted() } else { PANEL })
+                    .stroke(if fresh {
+                        egui::Stroke::new(1., color.accent)
+                    } else {
+                        egui::Stroke::NONE
+                    })
                     .inner_margin(egui::Margin::symmetric(3, 0))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 2.;
@@ -1248,6 +1167,14 @@ impl App {
                             }
                         });
                     });
+                if fresh {
+                    ui.painter().vline(
+                        row.response.rect.left() + 1.,
+                        row.response.rect.y_range(),
+                        egui::Stroke::new(3., color.accent),
+                    );
+                    row.response.on_hover_text("New in this session update");
+                }
             });
         }
     }
@@ -1431,8 +1358,8 @@ impl App {
             && Path::new(&r.target).is_absolute()
             && Path::new(&r.target).is_file();
         if native_media {
-            let modified = fs::metadata(&r.target).and_then(|m| m.modified()).ok();
-            let key = format!("{}:{}:{modified:?}", p.context.host, r.target);
+            let stamp = artifact::stamp(p, r);
+            let key = format!("{}:{}:{stamp:?}", p.context.host, r.target);
             if key != self.media_key {
                 self.media = None;
                 self.media_key = key;
@@ -1478,10 +1405,8 @@ impl App {
                     {
                         self.expanded_preview = false;
                     }
-                    ui.add(
-                        egui::Label::new(RichText::new(&resource.name).size(14.).strong())
-                            .truncate(),
-                    );
+                    let name = resource_text::tail(ui, &resource.name, 14., ui.available_width());
+                    ui.add(egui::Label::new(RichText::new(name).size(14.).strong()).truncate());
                 });
             });
         egui::CentralPanel::default()
@@ -1647,6 +1572,11 @@ impl eframe::App for App {
         eframe::set_value(storage, "feedr.render_markdown", &self.render_markdown);
         eframe::set_value(storage, "feedr.session_colors", &self.session_colors);
         eframe::set_value(storage, "feedr.session_view", &self.session_view);
+        eframe::set_value(
+            storage,
+            "feedr.session_updates",
+            &self.session_updates.cursors,
+        );
         eframe::set_value(storage, "feedr.columns", &self.columns);
         eframe::set_value(
             storage,
@@ -1963,7 +1893,7 @@ fn opens_in_sidebar(resource: &Resource) -> bool {
 mod tests {
     use super::*;
 
-    fn app() -> App {
+    pub(super) fn app() -> App {
         let (commands, _) = mpsc::channel();
         let (_, events) = mpsc::channel();
         App {
@@ -1989,8 +1919,10 @@ mod tests {
             reveal_artifact: false,
             session_colors: HashMap::new(),
             session_view: session_list::View::default(),
+            session_updates: session_updates::Updates::default(),
             resource: 0,
             error: None,
+            feed_error: None,
             search_focus: false,
             preview_key: String::new(),
             preview_rx: None,
@@ -2010,7 +1942,7 @@ mod tests {
             show_discovery: false,
         }
     }
-    fn post() -> Post {
+    pub(super) fn post() -> Post {
         Post {
             discovery: None,
             id: "post-with-multiple-attachments".into(),
@@ -2107,7 +2039,9 @@ mod tests {
         app.preview = Some(Preview::Image(image));
         app.preview_key = format!(
             "{}:{}:{:?}",
-            post.context.host, resource.target, None::<std::time::SystemTime>
+            post.context.host,
+            resource.target,
+            artifact::stamp(&post, resource)
         );
         let frame = |app: &mut App, time, events| {
             let _ = ctx.run(
@@ -2401,7 +2335,7 @@ mod tests {
     }
 
     #[test]
-    fn incoming_posts_pause_only_the_column_being_read() {
+    fn incoming_posts_update_every_column_while_preserving_the_selected_preview() {
         let mut app = app();
         let target = FeedTarget::Session("quiet-session".into());
         app.open_feed(target.clone());
@@ -2439,12 +2373,129 @@ mod tests {
         ))
         .unwrap();
         app.receive();
-        assert!(app.feeds[&target].pending.is_some());
-        assert_eq!(app.feeds[&target].snapshot.posts.len(), 1);
-        assert!(app.feeds[&target].snapshot.posts[0].read);
-        assert!(app.feeds[&FeedTarget::All].pending.is_none());
+        assert_eq!(app.feeds[&target].snapshot.posts.len(), 2);
+        assert!(app.feeds[&target].snapshot.posts[1].read);
         assert_eq!(app.feeds[&FeedTarget::All].snapshot.posts[0].id, added.id);
         assert_eq!(app.selected.as_deref(), Some("quiet-post"));
+    }
+
+    #[test]
+    fn sidebar_visit_highlights_live_updates_without_acknowledging_the_next_run() {
+        let mut app = app();
+        let target = FeedTarget::Session("session".into());
+        app.open_feed(target.clone());
+        let mut old = post();
+        old.created_at = 1;
+        old.updated_at = 1;
+        old.read = true;
+        app.session_updates = session_updates::Updates::default();
+        app.session_updates
+            .open("session", None, std::slice::from_ref(&old), 10);
+        let feed = app.feeds.get_mut(&target).unwrap();
+        feed.snapshot.posts = vec![old.clone()];
+        app.merge_posts();
+        app.select(old.id.clone());
+        let mut new = old.clone();
+        new.id = "new-before-checkmark".into();
+        new.created_at = 15;
+        new.updated_at = 15;
+        let (tx, rx) = mpsc::channel();
+        app.events = rx;
+        let snapshot = |posts: Vec<Post>| Snapshot {
+            total: posts.len(),
+            posts,
+            ..Snapshot::default()
+        };
+        let query = app.feeds[&target].query(&app.query, &target);
+        tx.send(Event::Snapshot(
+            target.clone(),
+            query.clone(),
+            Box::new(snapshot(vec![new.clone(), old.clone()])),
+        ))
+        .unwrap();
+        app.receive();
+        assert_eq!(app.feeds[&target].snapshot.posts.len(), 2);
+
+        app.open_feed(target.clone());
+        assert_eq!(app.feeds[&target].snapshot.posts[0].id, new.id);
+        assert!(
+            app.session_updates
+                .highlighted("session", &new, &new.resources[0].target)
+        );
+        assert!(
+            !app.session_updates
+                .highlighted("session", &old, &old.resources[0].target)
+        );
+        // Rendering may consume the scroll request before the new query arrives.
+        app.feeds.get_mut(&target).unwrap().reveal_latest = false;
+        tx.send(Event::Snapshot(
+            target.clone(),
+            query.clone(),
+            Box::new(snapshot(vec![new.clone(), old.clone()])),
+        ))
+        .unwrap();
+        app.receive();
+
+        let mut next = new.clone();
+        next.id = "next-run".into();
+        next.created_at = now() + 1000;
+        next.updated_at = next.created_at;
+        tx.send(Event::Snapshot(
+            target.clone(),
+            query,
+            Box::new(snapshot(vec![next.clone(), new, old])),
+        ))
+        .unwrap();
+        app.receive();
+        assert_eq!(app.feeds[&target].snapshot.posts.len(), 3);
+        assert!(
+            !app.session_updates
+                .highlighted("session", &next, &next.resources[0].target)
+        );
+    }
+
+    #[test]
+    fn only_new_attachments_in_the_session_column_receive_the_highlight_tint() {
+        let mut app = app();
+        let mut p = post();
+        p.created_at = 1;
+        p.updated_at = 1;
+        app.session_updates
+            .open("session", None, std::slice::from_ref(&p), 10);
+        p.updated_at = 15;
+        p.resources.push(Resource {
+            original: "/missing/new.md".into(),
+            target: "/missing/new.md".into(),
+            name: "new.md".into(),
+            kind: ResourceKind::File,
+        });
+        app.session_updates
+            .open("session", None, std::slice::from_ref(&p), 20);
+        let color = session_color::resolve("session", &app.session_colors).highlighted();
+        let ctx = egui::Context::default();
+        for (target, expected) in [
+            (FeedTarget::Session("session".into()), 1),
+            (FeedTarget::All, 0),
+        ] {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600., 600.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.card(ui, &p, &target));
+                },
+            );
+            let tinted = output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(&shape.shape,egui::Shape::Rect(rect) if rect.fill==color))
+                .count();
+            assert_eq!(tinted, expected, "target={target:?}");
+        }
     }
 
     #[test]
