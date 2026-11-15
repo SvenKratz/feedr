@@ -14,6 +14,7 @@ import time
 
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "FEEDR_"))}
+env['DO_NOT_TRACK'] = '1'
 children = []
 
 with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:

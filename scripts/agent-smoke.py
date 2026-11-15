@@ -8,10 +8,12 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 binary = str(Path(sys.argv[1]).resolve())
 env = {k: v for k, v in os.environ.items() if not k.startswith(('HERDR_', 'FEEDR_'))}
+env['DO_NOT_TRACK'] = '1'
 children = []
 with tempfile.TemporaryDirectory(prefix='fdr-agent-', dir='/tmp') as temporary:
     root = Path(temporary)
@@ -25,7 +27,14 @@ with tempfile.TemporaryDirectory(prefix='fdr-agent-', dir='/tmp') as temporary:
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
 
+    broker_log = (root / 'service-test.log').open('w')
+    broker = subprocess.Popen(base + ['serve'], env=env, stdout=broker_log, stderr=broker_log)
     try:
+        deadline = time.monotonic() + 10
+        while not (data / 'feedr.sock').exists():
+            assert broker.poll() is None, (root / 'service-test.log').read_text()
+            assert time.monotonic() < deadline, 'Test service did not start'
+            time.sleep(0.02)
         cli('start')
         assert not cli('discovery', 'status')['enabled']
         for client, label, config_file in [('codex', 'Codex', 'config.toml'), ('claude', 'Claude Code', '.claude.json')]:
@@ -103,7 +112,6 @@ with tempfile.TemporaryDirectory(prefix='fdr-agent-', dir='/tmp') as temporary:
             assert hook('Stop', stop | {'turn_id': 'after-post'}) == {}
             assert hook('Stop', stop | {'session_id': 'another-session', 'turn_id': 'another'})['decision'] == 'block', 'Another session must not satisfy this session\'s receipt'
             # An older post does not hide a revised artifact from the completion check.
-            import time
             os.utime(report, (time.time() + 3, time.time() + 3))
             assert hook('Stop', stop | {'turn_id': 'revised'})['decision'] == 'block'
             os.utime(report, None)
@@ -126,4 +134,13 @@ with tempfile.TemporaryDirectory(prefix='fdr-agent-', dir='/tmp') as temporary:
             if child.poll() is None:
                 child.terminate()
                 child.wait(timeout=5)
-        subprocess.run(base + ['stop'], env=env, capture_output=True, timeout=5)
+        try:
+            if broker.poll() is None:
+                stopped = subprocess.run(base + ['stop'], env=env, capture_output=True, timeout=5)
+                assert stopped.returncode == 0, stopped.stderr
+                broker.wait(timeout=15)
+        finally:
+            if broker.poll() is None:
+                broker.terminate()
+                broker.wait(timeout=5)
+            broker_log.close()
