@@ -235,6 +235,7 @@ impl Store {
             .into_iter()
             .map(|r| Resource::resolve(r, &context))
             .collect::<Result<Vec<_>>>()?;
+        let published_at = now();
         let mut p = Post {
             discovery: None,
             id: new_id(),
@@ -245,8 +246,8 @@ impl Store {
             context,
             readiness: input.readiness,
             revision: 1,
-            created_at: now(),
-            updated_at: now(),
+            created_at: published_at,
+            updated_at: published_at,
             pinned: false,
             archived: false,
             read: false,

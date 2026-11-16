@@ -523,6 +523,7 @@ fn publication_recency_survives_restart_and_read_pin_and_retry_do_not_fake_activ
     let db = dir.path().join("db");
     let mut store = Store::open(&db).unwrap();
     let first = store.post(post(dir.path())).unwrap();
+    assert_eq!(first.created_at, first.updated_at);
     let published = store.sessions().unwrap()[0].last_activity_at;
     assert_eq!(published, Some(first.created_at));
     std::thread::sleep(std::time::Duration::from_millis(3));
