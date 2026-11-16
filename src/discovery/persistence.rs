@@ -152,6 +152,7 @@ impl Store {
             };
             let tx = self.db.transaction()?;
             Self::write_post(&tx, &post, Some(&format!("discovered:{key}")))?;
+            Self::write_activity(&tx, &post.session_id, post.created_at)?;
             tx.execute(
                 "INSERT INTO discovery_mentions VALUES(?1,?2,?3)",
                 params![key, post.id, input.source],
@@ -218,6 +219,7 @@ impl Store {
         post.updated_at = now();
         let tx = self.db.transaction()?;
         Self::write_post(&tx, &post, None)?;
+        Self::write_activity(&tx, &post.session_id, post.updated_at)?;
         Self::bump(&tx)?;
         tx.commit()?;
         Ok(())

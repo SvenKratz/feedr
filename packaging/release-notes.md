@@ -1,34 +1,41 @@
-Feedr 0.1.9 fixes live feed updates and makes compact artifact rows easier to scan.
+Feedr 0.1.10 publishes the Newest left column ordering and combined resource filters that were previously available only in the local development build.
 
-- New images and other artifacts appear in every matching open column while an older preview stays open. No need to click **All** again. Failed requests retry automatically, and all filters reconcile every two seconds to catch delayed files and missed notifications.
-- Image thumbnails and sidebar previews refresh after atomic file replacement, even when the modification time is preserved. File creation, removal and recreation update availability without changing the stored post.
-- Session visits highlight new resources since the previous visit. Clicking a session reveals its latest items; background refreshes do not consume the next update's highlights. Visit boundaries survive restarts.
-- Audio files have a music-note icon and an **Audio** filter, including saved history after upgrading; video rows use a play-frame icon or a play badge over their thumbnail. Long filenames and paths shorten from the beginning to keep the useful filename ending and extension visible.
-- The sidebar starts directly with agent sessions. The unused All resources / Pinned / Archived navigation has been removed; restore the catchall column with **+ → All sessions**.
-- Added live-feed and thumbnail regressions for idle-window wakeups, selected previews, MCP and discovered images, session isolation, bursts, late attachments, incomplete images, queue saturation, query races and reconnects. The local macOS suite passes 113 Rust tests plus CLI/MCP/discovery/restart and media smoke checks; release jobs separately validate both macOS and Linux architectures before publication.
+- **Newest left:** turn on the feed-toolbar toggle to move the most recently active open session column to the left. New publications, discovered resources and observed agent activity update the order. All sessions stays on the right. Each column retains its vertical scroll and selected preview. Turn the toggle off to restore your manual order; dragging a tab takes over from automatic ordering using the visible arrangement. The preference survives restarts.
+- **Combine resource types:** select Image and PDF together, or any combination of type buttons. Click a selected type to remove it; All clears the selection, and removing the last selected type returns to All. Choices persist between launches. Matching attachments, column queries, counts, pagination and keyboard navigation use the combined selection. Existing single-type MCP queries remain compatible.
+- Discovered resources and files becoming ready now update durable session activity, so newly available artifacts participate in column ordering without reads, pins or duplicate delivery faking recency.
+- Updated the README with a dedicated macOS dependency command and a current-UI screenshot using synthetic demo sessions and the Feedr synthwave hero. No personal session data is included.
+- Added coverage for automatic/manual ordering, drag takeover, saved preferences, live Image/PDF arrivals across columns, grouped attachments, availability-aware pagination, legacy queries and real MCP multi-type requests. The local macOS suite passes 123 Rust tests; the release pipeline additionally gates publication on stable Rust checks and all four native installer jobs.
 
-### Usage statistics
+### Updating from 0.1.9
 
-This release also includes the previously unpublished 0.1.7 usage-statistics changes. Each installation sends one anonymous install event with a random install ID, version, OS, architecture and installation type. Further daily usage statistics are opt-in. Titles, paths, URLs, file contents and host names are never sent. `feedr telemetry status|enable|disable` controls the choice; `DO_NOT_TRACK=1` or `FEEDR_TELEMETRY=0` disables everything, including the install count. Builds from source without a configured PostHog project token send nothing. See [TELEMETRY.md](https://github.com/SvenKratz/feedr/blob/v0.1.9/TELEMETRY.md) for every event and field.
+Newest left and combined type filters are new in **0.1.10**; the published 0.1.9 packages do not contain them. This release uses a new semantic version so existing updaters can discover it. The previously published 0.1.9 assets are unchanged.
+
+On macOS and portable installations, leave automatic updates enabled or use the version button to check GitHub immediately. Feedr downloads the exact platform package, verifies its published digest, and restarts through a helper with startup verification and rollback. The app must be running for automatic checks. Debian installations show availability and release notes; install the new .deb through apt so the package database stays consistent.
 
 ### Downloads and installation
 
 | Platform | Installer |
 |---|---|
-| macOS 14+, Apple Silicon | `feedr-v0.1.9-macos-aarch64.dmg` |
-| macOS 14+, Intel | `feedr-v0.1.9-macos-x86_64.dmg` |
-| Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_0.1.9_amd64.deb` |
-| Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_0.1.9_arm64.deb` |
-| Source | `feedr-v0.1.9-src.tar.gz` or `feedr-v0.1.9-src.zip` |
+| macOS 14+, Apple Silicon | `feedr-v0.1.10-macos-aarch64.dmg` |
+| macOS 14+, Intel | `feedr-v0.1.10-macos-x86_64.dmg` |
+| Debian 12+ / Ubuntu 24.04+, Intel/AMD 64-bit | `feedr_0.1.10_amd64.deb` |
+| Debian 12+ / Ubuntu 24.04+, ARM 64-bit | `feedr_0.1.10_arm64.deb` |
+| Source | `feedr-v0.1.10-src.tar.gz` or `feedr-v0.1.10-src.zip` |
 
-**macOS:** open the DMG and drag Feedr to Applications. To add the terminal command, launch the app and choose **feedr → Install CLI…**, then open a new terminal. Follow agent setup on first launch; return with **?** anytime. Install the separate PDF/video runtimes with `brew install poppler mpv ffmpeg`. Images and Markdown work without them. These DMGs are **ad-hoc signed, without Developer ID signing or notarization**; Gatekeeper may block them. Source builds are available if you prefer not to authorize an unnotarized download.
+**macOS:** open the DMG and drag Feedr to Applications. Images and Markdown work without additional runtimes. Install the separate PDF/video dependencies with:
 
-**Linux:** install the downloaded package with `sudo apt install ./feedr_0.1.9_amd64.deb` (use `arm64` on ARM). Apt installs the media and desktop dependencies. Launch Feedr from the application menu or `feedr gui`. X11 startup is smoke-tested under Xvfb; Wayland desktop behavior and hotkeys need testing on real desktops. Ctrl+Alt+F is available on X11; use the launcher on Wayland.
+```sh
+brew install poppler mpv ffmpeg
+```
 
-ZIP/tar archives remain available for portable installs and the automatic updater. Debian installations check GitHub for release notes and availability; install newer `.deb` files with apt so the package database stays consistent. Removing the app/package leaves your feed history intact.
+The DMGs are **ad-hoc signed, without Developer ID signing or notarization**; Gatekeeper may block them. Source builds are available if you prefer not to authorize an unnotarized download. To add the terminal command, use **feedr → Install CLI…** after installation. Agent setup is available on first launch and under **?**; herdr and mention discovery are optional.
 
-Every downloadable asset has a `.sha256` sidecar; `SHA256SUMS` covers all ten packages. Rust dependency notices and licenses are included in the binary packages. Media runtimes are separate dependencies with their own licenses. Source archives contain the tracked release source and `Cargo.lock`, excluding local artifacts and user data; building requires Rust and access to the public crate registry.
+**Linux:** install with `sudo apt install ./feedr_0.1.10_amd64.deb` (use `arm64` on ARM). Apt resolves the desktop and media dependencies. Launch from the application menu or run `feedr gui`. Installed CLI/MCP/media checks and X11 GUI startup under Xvfb are release gates; real Wayland desktop behavior remains unverified. Ctrl+Alt+F is available on X11; use the launcher on Wayland.
 
-### Preview limitations
+ZIP/tar updater packages and source archives are provided alongside both platform installers. Every package has a .sha256 sidecar, and SHA256SUMS covers all ten packages. Binary distributions include dependency notices. Native media runtimes retain their own licenses. Removing the app/package preserves feed history. Source archives contain tracked release source and Cargo.lock, exclude local artifacts/user data, and require Rust and public crate-registry access to build.
 
-Remote artifact transfer and a public viewer extension API are still planned. Local paths are live references, not copies; missing files are hidden from the feed by default and remain in history. Discovery is off by default. This is an early release; keep backups of important artifacts.
+### Usage statistics and preview limitations
+
+Each installation sends one anonymous install event with a random install ID, version, OS, architecture and install type. Further daily statistics are opt-in. Titles, paths, URLs, contents, session names and host names are never sent. `DO_NOT_TRACK=1` or `FEEDR_TELEMETRY=0` disables everything, including the install count. Source builds without a configured PostHog project token send nothing. See [TELEMETRY.md](https://github.com/SvenKratz/feedr/blob/v0.1.10/TELEMETRY.md) for the full schema.
+
+This is a public preview. Remote artifact transfer and a public viewer extension API remain planned. Paths reference live files rather than copies; missing files are hidden by default and retained in history. Mention discovery is off by default.

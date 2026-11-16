@@ -320,13 +320,30 @@ pub struct Session {
 pub struct FeedQuery {
     pub search: String,
     pub session_id: Option<String>,
+    /// Legacy single-type filter. Combined with kinds when both are supplied.
     pub kind: Option<String>,
+    /// Include any of these resource types, e.g. ["Image", "PDF"].
+    /// An empty list and no kind include every type.
+    pub kinds: Vec<String>,
     pub pinned_only: bool,
     pub archived: bool,
     pub limit: usize,
     /// Hide unavailable attachments and posts with no available resources.
     /// HTTP(S) links remain visible; remote file paths cannot be verified locally.
     pub available_only: bool,
+}
+impl FeedQuery {
+    pub fn selected_types(&self) -> impl Iterator<Item = &str> {
+        self.kind
+            .as_deref()
+            .into_iter()
+            .chain(self.kinds.iter().map(String::as_str))
+    }
+
+    pub fn matches_type(&self, kind: &str) -> bool {
+        let mut types = self.selected_types().peekable();
+        types.peek().is_none() || types.any(|selected| selected == kind)
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {

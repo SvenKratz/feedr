@@ -44,16 +44,65 @@ impl Target {
 pub(super) struct Layout {
     pub order: Vec<Target>,
     pub active: Option<Target>,
+    #[serde(default)]
+    pub newest_first: bool,
 }
 impl Default for Layout {
     fn default() -> Self {
         Self {
             order: vec![Target::All],
             active: Some(Target::All),
+            newest_first: false,
         }
     }
 }
 impl Layout {
+    pub fn display_order(&self, sessions: &[Session]) -> Vec<Target> {
+        let mut order = self.order.clone();
+        if self.newest_first {
+            let activity: std::collections::HashMap<_, _> = sessions
+                .iter()
+                .map(|session| (session.id.as_str(), session.last_activity_at))
+                .collect();
+            // Stable ties retain the user's manual order; the catchall must
+            // leave the very first slot available for a session.
+            order.sort_by(|a, b| match (a, b) {
+                (Target::All, Target::All) => std::cmp::Ordering::Equal,
+                (Target::All, _) => std::cmp::Ordering::Greater,
+                (_, Target::All) => std::cmp::Ordering::Less,
+                (Target::Session(a), Target::Session(b)) => activity
+                    .get(b.as_str())
+                    .copied()
+                    .flatten()
+                    .cmp(&activity.get(a.as_str()).copied().flatten()),
+            });
+        }
+        order
+    }
+
+    pub fn drag_to(
+        &mut self,
+        displayed: &[Target],
+        source: &Target,
+        destination: &Target,
+        after: bool,
+    ) {
+        if source == destination
+            || !self.order.contains(source)
+            || !self.order.contains(destination)
+        {
+            return;
+        }
+        if self.newest_first {
+            // A direct drag takes over from automatic ordering using the exact
+            // arrangement the user grabbed, even if activity changed mid-drag.
+            self.order = displayed.to_vec();
+            self.normalize();
+            self.newest_first = false;
+        }
+        self.move_to(source, destination, after);
+    }
+
     pub fn normalize(&mut self) {
         let mut seen = std::collections::HashSet::new();
         self.order.retain(|target| seen.insert(target.clone()));
@@ -115,6 +164,83 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session(id: &str, activity: Option<i64>) -> Session {
+        serde_json::from_value(serde_json::json!({
+            "id":id,"context":{},"status":"idle","online":true,
+            "terminal_id":id,"last_activity_at":activity
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn activity_order_is_stable_and_reversible_with_the_catchall_last() {
+        let manual = vec![
+            Target::All,
+            Target::Session("a".into()),
+            Target::Session("unknown".into()),
+            Target::Session("b".into()),
+            Target::Session("tie".into()),
+            Target::Session("missing".into()),
+        ];
+        let mut layout = Layout {
+            order: manual.clone(),
+            active: Some(Target::Session("a".into())),
+            newest_first: true,
+        };
+        let sessions = vec![
+            session("a", Some(100)),
+            session("b", Some(200)),
+            session("tie", Some(100)),
+            session("unknown", None),
+        ];
+        assert_eq!(
+            layout.display_order(&sessions),
+            vec![
+                Target::Session("b".into()),
+                Target::Session("a".into()),
+                Target::Session("tie".into()),
+                Target::Session("unknown".into()),
+                Target::Session("missing".into()),
+                Target::All
+            ]
+        );
+        assert_eq!(layout.order, manual);
+        assert_eq!(layout.active, Some(Target::Session("a".into())));
+        layout.newest_first = false;
+        assert_eq!(layout.display_order(&sessions), manual);
+    }
+
+    #[test]
+    fn automatic_order_persists_and_legacy_layouts_keep_manual_order() {
+        let mut layout: Layout = serde_json::from_value(serde_json::json!({
+            "order":["All",{"Session":"a"}],"active":{"Session":"a"}
+        }))
+        .unwrap();
+        assert!(!layout.newest_first);
+        layout.newest_first = true;
+        let restored: Layout =
+            serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        assert!(restored.newest_first);
+        assert_eq!(restored.order, layout.order);
+        assert_eq!(restored.active, layout.active);
+    }
+
+    #[test]
+    fn dragging_uses_the_visible_order_and_switches_to_manual() {
+        let a = Target::Session("a".into());
+        let b = Target::Session("b".into());
+        let mut layout = Layout {
+            order: vec![Target::All, a.clone(), b.clone()],
+            active: Some(a.clone()),
+            newest_first: true,
+        };
+        let visible = vec![b.clone(), a.clone(), Target::All];
+        layout.drag_to(&visible, &b, &Target::All, true);
+        assert!(!layout.newest_first);
+        assert_eq!(layout.order, vec![a.clone(), Target::All, b]);
+        assert_eq!(layout.active, Some(a));
+    }
     #[test]
     fn closed_catchall_stays_closed_and_saved_order_survives() {
         let mut layout = Layout::default();

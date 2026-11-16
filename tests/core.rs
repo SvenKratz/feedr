@@ -626,6 +626,137 @@ fn resolving_parent_components_under_symlinks_uses_filesystem_semantics() {
 }
 
 #[test]
+fn combined_type_filters_preserve_legacy_queries_and_count_grouped_posts_once() {
+    let legacy: FeedQuery = serde_json::from_value(json!({"kind":"Markdown"})).unwrap();
+    assert!(legacy.kinds.is_empty());
+    assert!(legacy.matches_type("Markdown"));
+    assert!(!legacy.matches_type("Image"));
+    let unfiltered: FeedQuery = serde_json::from_value(json!({})).unwrap();
+    assert!(unfiltered.matches_type("Image"));
+
+    let dir = tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let mut saved = Vec::new();
+    for (index, names) in [
+        vec!["image.png"],
+        vec!["document.pdf"],
+        vec!["group-image.png", "group-document.pdf", "group-note.md"],
+        vec!["note.md"],
+        vec!["other-session.pdf"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut input = post(dir.path());
+        input.idempotency_key = Some(format!("combined-{index}"));
+        input.context.as_mut().unwrap().native_session_id =
+            Some(if index == 4 { "other" } else { "main" }.into());
+        input.resources = names
+            .into_iter()
+            .map(|name| {
+                std::fs::write(dir.path().join(name), "available").unwrap();
+                ResourceInput {
+                    uri: name.into(),
+                    kind: None,
+                }
+            })
+            .collect();
+        saved.push(store.post(input).unwrap());
+    }
+    let mut read = update(&saved[1]);
+    read.read = Some(true);
+    store.update(read).unwrap();
+    let query = FeedQuery {
+        session_id: Some(saved[0].session_id.clone()),
+        kinds: vec!["Image".into(), "PDF".into(), "PDF".into()],
+        search: "Report".into(),
+        limit: 1,
+        ..Default::default()
+    };
+    for available_only in [false, true] {
+        let snapshot = store
+            .snapshot(&FeedQuery {
+                available_only,
+                ..query.clone()
+            })
+            .unwrap();
+        assert_eq!(
+            (snapshot.total, snapshot.unread, snapshot.posts.len()),
+            (3, 2, 1)
+        );
+    }
+    let combined: FeedQuery = serde_json::from_value(json!({
+        "kind":"Markdown", "kinds":["Image"], "session_id":saved[0].session_id
+    }))
+    .unwrap();
+    let snapshot = store.snapshot(&combined).unwrap();
+    assert_eq!(snapshot.total, 3);
+    assert!(!snapshot.posts.iter().any(|p| p.id == saved[1].id));
+    assert_eq!(
+        store
+            .snapshot(&FeedQuery {
+                kinds: vec!["Image\" OR 1=1 --".into()],
+                ..Default::default()
+            })
+            .unwrap()
+            .total,
+        0
+    );
+}
+
+#[test]
+fn combined_type_filters_recheck_available_attachments_before_pagination() {
+    let dir = tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    std::fs::write(dir.path().join("ready.pdf"), "PDF").unwrap();
+    std::fs::write(dir.path().join("ready.md"), "# Markdown").unwrap();
+    let mut input = post(dir.path());
+    input.resources[0].uri = "ready.pdf".into();
+    let pdf = store.post(input).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let mut input = post(dir.path());
+    input.idempotency_key = Some("mixed-availability".into());
+    input.resources = ["future.png", "ready.md"]
+        .map(|uri| ResourceInput {
+            uri: uri.into(),
+            kind: None,
+        })
+        .into();
+    let mixed = store.post(input).unwrap();
+    let query = FeedQuery {
+        kinds: vec!["Image".into(), "PDF".into()],
+        available_only: true,
+        limit: 1,
+        ..Default::default()
+    };
+    let snapshot = store.snapshot(&query).unwrap();
+    assert_eq!(
+        (snapshot.total, snapshot.unread, snapshot.posts.len()),
+        (1, 1, 1)
+    );
+    assert_eq!(snapshot.posts[0].id, pdf.id);
+    assert_eq!(
+        store
+            .snapshot(&FeedQuery {
+                available_only: false,
+                ..query.clone()
+            })
+            .unwrap()
+            .total,
+        2
+    );
+    let sequence = store.sequence().unwrap();
+    std::fs::write(dir.path().join("future.png"), "Image").unwrap();
+    let snapshot = store.snapshot(&query).unwrap();
+    assert_eq!((snapshot.total, snapshot.unread), (2, 2));
+    assert_eq!(snapshot.posts[0].id, mixed.id);
+    std::fs::remove_file(dir.path().join("future.png")).unwrap();
+    assert_eq!(store.snapshot(&query).unwrap().posts[0].id, pdf.id);
+    assert_eq!(store.get(&mixed.id).unwrap().resources.len(), 2);
+    assert_eq!(store.sequence().unwrap(), sequence);
+}
+
+#[test]
 fn type_filtering_and_pagination_return_accurate_counts() {
     let dir = tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("db")).unwrap();

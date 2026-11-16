@@ -4,6 +4,7 @@
 /.feedr/
 /.artifacts/
 /.playwright-mcp/
+/tmp/
 *.sqlite3*
 *.sock
 .DS_Store

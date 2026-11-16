@@ -30,6 +30,55 @@ fn enable(store: &mut Store) {
         })
         .unwrap();
 }
+
+#[test]
+fn discovered_publications_update_activity_but_read_pin_and_deduplication_do_not() {
+    let dir = tempdir().unwrap();
+    let (mut store, id) = setup(dir.path());
+    enable(&mut store);
+    let found = store.ingest(&input(&id, "Ready: ./new.png")).unwrap();
+    let p = store.get(&found.created[0]).unwrap();
+    let first = store
+        .sessions()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .last_activity_at;
+    assert_eq!(first, Some(p.created_at));
+    let edited = store
+        .update(
+            serde_json::from_value(
+                json!({"id":p.id,"expected_revision":p.revision,"read":true,"pinned":true}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    store.keep_discovery(&edited.id, edited.revision).unwrap();
+    store.ingest(&input(&id, "Ready: ./new.png")).unwrap();
+    assert_eq!(
+        store
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .last_activity_at,
+        first
+    );
+    drop(store);
+    let restored = Store::open(&dir.path().join("feed.sqlite3")).unwrap();
+    assert_eq!(
+        restored
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .last_activity_at,
+        first
+    );
+}
 #[test]
 fn discovery_types_distinguish_markdown_plain_text_code_and_audio() {
     let context = Context {

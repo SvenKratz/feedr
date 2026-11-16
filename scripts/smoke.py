@@ -174,6 +174,24 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
             snapshot = broker_call("snapshot", {**query, **scope})
             assert [p["id"] for p in snapshot["posts"]] == [image_post["id"]]
 
+        # Additive multi-type queries must pass through the real MCP schema,
+        # not just work in the desktop's in-memory filter.
+        combined_query = {"kinds": ["Image", "PDF"], "available_only": True, "session_id": session}
+        combined = rpc({"jsonrpc":"2.0","id":60,"method":"tools/call","params":{
+            "name":"feedr_list", "arguments":combined_query
+        }})
+        assert not combined.get("isError"), combined
+        combined_snapshot = json.loads(combined["content"][0]["text"])
+        assert [p["id"] for p in combined_snapshot["posts"]] == [image_post["id"]]
+        pdf_path = pathlib.Path(root, "combined-filter.pdf")
+        pdf_path.write_text("synthetic PDF for type filtering")
+        pdf_post = cli("post", "--title", "Combined filter PDF", "--session", session, str(pdf_path))
+        combined_snapshot = broker_call("snapshot", combined_query)
+        assert combined_snapshot["total"] == 2
+        assert {p["id"] for p in combined_snapshot["posts"]} == {image_post["id"], pdf_post["id"]}
+        assert broker_call("snapshot", query)["total"] == 1, "Legacy single-type query changed"
+        print("PASS: combined Image/PDF filters over MCP and broker IPC preserve legacy single-type queries")
+
         late_path = pathlib.Path(root, "late-image.png")
         result = rpc({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"feedr_update","arguments":{
             "id":image_post["id"], "expected_revision":image_post["revision"],

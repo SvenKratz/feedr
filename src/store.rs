@@ -351,7 +351,7 @@ impl Store {
         tx.commit()?;
         Ok(p)
     }
-    fn write_activity(db: &Connection, id: &str, timestamp: i64) -> Result<()> {
+    pub(crate) fn write_activity(db: &Connection, id: &str, timestamp: i64) -> Result<()> {
         let json: String =
             db.query_row("SELECT json FROM sessions WHERE id=?1", [id], |r| r.get(0))?;
         let mut session: Session = serde_json::from_str(&json)?;
@@ -388,7 +388,13 @@ impl Store {
         };
         let discovery = self.discovery_config()?;
         let allowed = discovery.type_filter();
-        let filter = "archived=?1 AND (?2 IS NULL OR session_id=?2) AND (?3=0 OR pinned=1) AND instr(searchable,?4)>0 AND (?5 IS NULL OR instr(types,'|'||?5||'|')>0) AND (?1=1 OR discovery_type IS NULL OR instr(?6,'|'||discovery_type||'|')>0)";
+        let selected_types: Vec<_> = q.selected_types().collect();
+        let types = if selected_types.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&selected_types)?)
+        };
+        let filter = "archived=?1 AND (?2 IS NULL OR session_id=?2) AND (?3=0 OR pinned=1) AND instr(searchable,?4)>0 AND (?5 IS NULL OR EXISTS (SELECT 1 FROM json_each(?5) AS wanted WHERE instr(posts.types,'|'||wanted.value||'|')>0)) AND (?1=1 OR discovery_type IS NULL OR instr(?6,'|'||discovery_type||'|')>0)";
         let search = q.search.to_lowercase();
         let (mut total, mut unread): (usize, usize) = if q.available_only {
             (0, 0)
@@ -400,7 +406,7 @@ impl Store {
                     q.session_id,
                     q.pinned_only,
                     search,
-                    q.kind,
+                    types,
                     allowed
                 ],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -415,7 +421,7 @@ impl Store {
                 q.session_id,
                 q.pinned_only,
                 search,
-                q.kind,
+                types,
                 allowed,
                 if q.available_only {
                     -1_i64
@@ -448,9 +454,7 @@ impl Store {
                         })
                 });
                 if post.resources.is_empty()
-                    || q.kind
-                        .as_ref()
-                        .is_some_and(|kind| !post.resources.iter().any(|r| r.file_type() == kind))
+                    || !post.resources.iter().any(|r| q.matches_type(r.file_type()))
                 {
                     continue;
                 }

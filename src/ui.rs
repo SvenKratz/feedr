@@ -29,6 +29,7 @@ mod session_color;
 mod session_list;
 mod session_updates;
 mod setup;
+mod type_filters;
 mod updates;
 mod viewer_header;
 
@@ -86,6 +87,7 @@ struct App {
     _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     snapshot: Snapshot,
     columns: ColumnLayout,
+    displayed_columns: Vec<FeedTarget>,
     feeds: HashMap<FeedTarget, Feed>,
     reveal_column: Option<FeedTarget>,
     dragging_column: Option<(FeedTarget, egui::Pos2)>,
@@ -158,6 +160,7 @@ impl App {
             .unwrap_or(false);
         let query = FeedQuery {
             available_only: !show_unavailable,
+            kinds: type_filters::restore(cc.storage),
             ..FeedQuery::default()
         };
         let mut columns: ColumnLayout = cc
@@ -216,6 +219,7 @@ impl App {
             _hotkey: hotkey,
             snapshot: Snapshot::default(),
             columns,
+            displayed_columns: Vec::new(),
             feeds,
             reveal_column: None,
             dragging_column: None,
@@ -415,12 +419,7 @@ impl App {
                 post.resources
                     .iter()
                     .enumerate()
-                    .filter(|(_, resource)| {
-                        self.query
-                            .kind
-                            .as_ref()
-                            .is_none_or(|kind| resource.file_type() == kind)
-                    })
+                    .filter(|(_, resource)| self.query.matches_type(resource.file_type()))
                     .map(move |(index, _)| (post, index))
             })
             .collect();
@@ -811,17 +810,17 @@ impl App {
             .frame(egui::Frame::new().fill(PAPER).inner_margin(8))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for kind in [
-                        "All", "Markdown", "Image", "PDF", "Video", "Audio", "Web", "Folder",
-                        "File",
-                    ] {
-                        let selected = self.query.kind.as_deref().unwrap_or("All") == kind;
-                        if ui.selectable_label(selected, kind).clicked() {
-                            self.query.kind = if kind == "All" {
-                                None
-                            } else {
-                                Some(kind.into())
-                            };
+                    for kind in std::iter::once("All").chain(type_filters::TYPES) {
+                        let selected = type_filters::selected(&self.query, kind);
+                        let response = ui.selectable_label(selected, kind).on_hover_text(if kind == "All" {
+                            "Clear type filters and show all resources"
+                        } else {
+                            "Toggle this type; select several to combine them"
+                        });
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("resource-type-filter", kind)), response.rect));
+                        if response.clicked() {
+                            type_filters::toggle(&mut self.query, kind);
                             self.send_query();
                         }
                     }
@@ -834,6 +833,14 @@ impl App {
                                 self.send_query();
                             }
                         });
+                        let toggle = ui.selectable_label(self.columns.newest_first, "Newest left")
+                            .on_hover_text("Keep the most recently active session on the left and All sessions on the right. Turn off to restore your manual order; dragging a tab also returns to manual ordering.");
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("newest-columns-toggle"), toggle.rect));
+                        if toggle.clicked() {
+                            self.columns.newest_first = !self.columns.newest_first;
+                            self.reveal_column = self.columns.display_order(&self.snapshot.sessions).first().cloned();
+                        }
                     });
                 });
                 if let Some(error) = self.error.clone().or_else(|| self.feed_error.clone()) {
@@ -855,26 +862,42 @@ impl App {
                     }
                     return;
                 }
-                let order = self.columns.order.clone();
+                // Keep drop targets still under the pointer during a drag.
+                let order = if self.dragging_column.is_some()
+                    && self.displayed_columns.len() == self.columns.order.len()
+                    && self.displayed_columns.iter().all(|t| self.columns.order.contains(t))
+                {
+                    self.displayed_columns.clone()
+                } else {
+                    self.columns.display_order(&self.snapshot.sessions)
+                };
+                let follow_latest = self.columns.newest_first
+                    && self.displayed_columns.first() != order.first()
+                    && self.dragging_column.is_none()
+                    && self.reveal_column.is_none();
+                self.displayed_columns = order.clone();
                 // Fit two or three readable columns; overflow horizontally at narrow widths.
                 let gap = 8.;
                 let width = ((ui.available_width() - gap * (order.len() - 1) as f32)
                     / order.len() as f32)
                     .max(340.);
                 let height = ui.available_height() - 14.;
-                egui::ScrollArea::horizontal()
+                let mut scroll = egui::ScrollArea::horizontal()
                     .id_salt("feed_columns_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .auto_shrink([false, false]);
+                if follow_latest {
+                    scroll = scroll.horizontal_scroll_offset(0.);
+                }
+                let _columns_scroll = scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = gap;
                         ui.horizontal_top(|ui| {
                             let mut moved = None;
                             let mut closed = None;
                             let mut drop_targets = Vec::new();
-                            for target in order {
-                                ui.push_id(&target, |ui| {
+                            for target in &order {
+                                ui.push_id(target, |ui| {
                                     let (rect, close) =
-                                        self.feed_column(ui, &target, width, height);
+                                        self.feed_column(ui, target, width, height);
                                     drop_targets.push((target.clone(), rect));
                                     if close {
                                         closed = Some(target.clone());
@@ -898,13 +921,16 @@ impl App {
                                 self.dragging_column = None;
                             }
                             if let Some((source, destination, after)) = moved {
-                                self.columns.move_to(&source, &destination, after);
+                                self.columns.drag_to(&order, &source, &destination, after);
                             }
                             if let Some(target) = closed {
                                 self.close_feed(&target);
                             }
                         });
                     });
+                #[cfg(test)]
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("feed-columns-scroll-state"),
+                    (_columns_scroll.id, _columns_scroll.state.offset.x)));
             });
     }
     fn feed_column(
@@ -967,7 +993,7 @@ impl App {
                                     )
                                     .on_hover_cursor(egui::CursorIcon::Grab)
                                     .on_hover_text(format!(
-                                        "{label}\nDrag to rearrange feed columns"
+                                        "{label}\nDrag to rearrange feed columns and use manual ordering"
                                     ));
                                     for x in [8., 12.] {
                                         for y in [-4., 0., 4.] {
@@ -1103,12 +1129,7 @@ impl App {
     }
     fn card(&mut self, ui: &mut egui::Ui, p: &Post, target: &FeedTarget) {
         for (index, resource) in p.resources.iter().enumerate() {
-            if self
-                .query
-                .kind
-                .as_ref()
-                .is_some_and(|kind| resource.file_type() != kind)
-            {
+            if !self.query.matches_type(resource.file_type()) {
                 continue;
             }
             ui.push_id((&p.id, index), |ui| {
@@ -1570,6 +1591,7 @@ impl eframe::App for App {
         eframe::set_value(storage, "feedr.auto_updates", &self.updates.automatic);
         eframe::set_value(storage, "feedr.next_update_check", &self.updates.next_check);
         eframe::set_value(storage, "feedr.render_markdown", &self.render_markdown);
+        type_filters::save(storage, &self.query);
         eframe::set_value(storage, "feedr.session_colors", &self.session_colors);
         eframe::set_value(storage, "feedr.session_view", &self.session_view);
         eframe::set_value(
@@ -1907,6 +1929,7 @@ mod tests {
             _hotkey: None,
             snapshot: Snapshot::default(),
             columns: ColumnLayout::default(),
+            displayed_columns: Vec::new(),
             feeds: HashMap::from([(FeedTarget::All, Feed::default())]),
             reveal_column: None,
             dragging_column: None,
@@ -2271,11 +2294,21 @@ mod tests {
         app.session_view = session_list::View::Priority;
         app.columns.open(FeedTarget::Session("session".into()));
         app.columns.close(&FeedTarget::All);
+        app.columns.newest_first = true;
+        app.query.kinds = vec!["Image".into(), "PDF".into()];
         app.session_colors.insert("session".into(), "iris".into());
         app.session_colors
             .insert("other".into(), "unknown-color".into());
         let mut storage = Storage::default();
+        assert!(type_filters::restore(Some(&storage)).is_empty());
         eframe::App::save(&mut app, &mut storage);
+        assert_eq!(type_filters::restore(Some(&storage)), ["Image", "PDF"]);
+        eframe::set_value(
+            &mut storage,
+            "feedr.resource_types",
+            &vec!["Image", "PDF", "Image", "removed-type"],
+        );
+        assert_eq!(type_filters::restore(Some(&storage)), ["Image", "PDF"]);
         let restored: HashMap<String, String> =
             eframe::get_value(&storage, "feedr.session_colors").unwrap();
         assert!(matches!(
@@ -2284,6 +2317,7 @@ mod tests {
         ));
         let columns: ColumnLayout = eframe::get_value(&storage, "feedr.columns").unwrap();
         assert_eq!(columns.order, [FeedTarget::Session("session".into())]);
+        assert!(columns.newest_first);
         assert_eq!(session_color::resolve("session", &restored).id, "iris");
         assert_eq!(
             session_color::resolve("other", &restored).id,
@@ -2495,6 +2529,151 @@ mod tests {
                 .filter(|shape| matches!(&shape.shape,egui::Shape::Rect(rect) if rect.fill==color))
                 .count();
             assert_eq!(tinted, expected, "target={target:?}");
+        }
+    }
+
+    #[test]
+    fn newest_left_toggle_reorders_live_columns_and_restores_manual_layout() {
+        let mut app = app();
+        let a = FeedTarget::Session("a".into());
+        let b = FeedTarget::Session("b".into());
+        app.open_feed(a.clone());
+        app.open_feed(b.clone());
+        app.reveal_column = None;
+        app.snapshot.sessions = [("a",100),("b",200)].map(|(id,at)| serde_json::from_value(json!({
+            "id":id,"context":{},"status":"idle","online":true,"terminal_id":id,"last_activity_at":at
+        })).unwrap()).into();
+        let mut old = post();
+        old.session_id = "a".into();
+        app.feeds.get_mut(&a).unwrap().snapshot.posts = vec![old.clone()];
+        app.merge_posts();
+        app.select_resource(&old, 1);
+        app.zoom = 2.1;
+        app.columns.active = Some(a.clone());
+        let ctx = egui::Context::default();
+        let frame = |app: &mut App, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800., 800.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.feed(ctx),
+            );
+        };
+        let click = |app: &mut App| {
+            let pos = ctx
+                .data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new("newest-columns-toggle"))
+                        .unwrap()
+                })
+                .center();
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        };
+        let left = |target: &FeedTarget| {
+            ctx.data(|d| {
+                d.get_temp::<egui::Rect>(egui::Id::new(("feed-column-rect", target)))
+                    .unwrap()
+            })
+            .left()
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        click(&mut app);
+        assert!(app.columns.newest_first);
+        assert!(left(&b) < left(&a) && left(&a) < left(&FeedTarget::All));
+        let (scroll_id, _) = ctx.data(|d| {
+            d.get_temp::<(egui::Id, f32)>(egui::Id::new("feed-columns-scroll-state"))
+                .unwrap()
+        });
+        let mut scroll = egui::scroll_area::State::load(&ctx, scroll_id).unwrap();
+        scroll.offset.x = 120.;
+        scroll.store(&ctx, scroll_id);
+        frame(&mut app, vec![]);
+        assert!(
+            ctx.data(|d| d
+                .get_temp::<(egui::Id, f32)>(egui::Id::new("feed-columns-scroll-state"))
+                .unwrap()
+                .1)
+                > 0.
+        );
+        let (tx, rx) = mpsc::channel();
+        app.events = rx;
+        let mut sessions = app.snapshot.sessions.clone();
+        sessions
+            .iter_mut()
+            .find(|s| s.id == "a")
+            .unwrap()
+            .last_activity_at = Some(300);
+        tx.send(Event::Snapshot(
+            a.clone(),
+            app.feeds[&a].query(&app.query, &a),
+            Box::new(Snapshot {
+                sessions,
+                posts: vec![old.clone()],
+                ..Default::default()
+            }),
+        ))
+        .unwrap();
+        app.receive();
+        frame(&mut app, vec![]);
+        assert!(left(&a) < left(&b) && left(&b) < left(&FeedTarget::All));
+        assert_eq!(
+            ctx.data(|d| d
+                .get_temp::<(egui::Id, f32)>(egui::Id::new("feed-columns-scroll-state"))
+                .unwrap()
+                .1),
+            0.
+        );
+        assert_eq!(app.selected.as_deref(), Some(old.id.as_str()));
+        assert_eq!(app.resource, 1);
+        assert_eq!(app.zoom, 2.1);
+        assert_eq!(app.columns.active, Some(a.clone()));
+        click(&mut app);
+        assert!(!app.columns.newest_first);
+        assert!(left(&FeedTarget::All) < left(&a) && left(&a) < left(&b));
+        assert_eq!(app.columns.order, vec![FeedTarget::All, a, b]);
+    }
+
+    #[test]
+    fn newest_left_control_is_visible_in_narrow_and_wide_feeds() {
+        for width in [360., 1100.] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.));
+            for _ in 0..2 {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        ..Default::default()
+                    },
+                    |ctx| app.feed(ctx),
+                );
+            }
+            let toggle = ctx.data(|d| {
+                d.get_temp::<egui::Rect>(egui::Id::new("newest-columns-toggle"))
+                    .unwrap()
+            });
+            assert!(
+                screen.contains_rect(toggle),
+                "width={width}, toggle={toggle:?}"
+            );
         }
     }
 

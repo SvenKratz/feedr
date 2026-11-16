@@ -189,18 +189,41 @@ impl Live {
             thread::sleep(Duration::from_millis(10));
         }
     }
-    fn rendered(&mut self, post: &Post) {
-        // No click, keyboard input, or filter toggle is sent to this frame.
-        let _ = self.ctx.run(
+    fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+        self.ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(1400., 900.),
                 )),
+                events,
                 ..Default::default()
             },
             |ctx| self.app.feed(ctx),
-        );
+        )
+    }
+    fn click_type(&mut self, kind: &str) {
+        self.frame(vec![]);
+        let pos = self.ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new(("resource-type-filter", kind)))
+                .unwrap()
+                .center()
+        });
+        for pressed in [true, false] {
+            self.frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+    }
+    fn rendered(&mut self, post: &Post) {
+        // No click, keyboard input, or filter toggle is sent to this frame.
+        self.frame(vec![]);
         assert!(
             self.ctx
                 .data(|d| d.get_temp::<egui::Rect>(egui::Id::new((
@@ -229,6 +252,173 @@ impl Drop for Live {
 
 fn contains(app: &App, target: &FeedTarget, id: &str) -> bool {
     app.feeds[target].snapshot.posts.iter().any(|p| p.id == id)
+}
+
+#[test]
+fn type_buttons_combine_and_toggle_off_with_live_updates_in_every_column() {
+    let mut live = Live::new();
+    live.image("first.png");
+    let image = live.publish("first.png", "a");
+    std::fs::write(live.root.path().join("first.pdf"), "synthetic PDF").unwrap();
+    let pdf = live.publish("first.pdf", "a");
+    std::fs::write(live.root.path().join("excluded.md"), "# Excluded").unwrap();
+    let note = live.publish("excluded.md", "a");
+    std::fs::write(live.root.path().join("other.pdf"), "synthetic PDF").unwrap();
+    let other = live.publish("other.pdf", "b");
+    let a = FeedTarget::Session(image.session_id.clone());
+    let b = FeedTarget::Session(other.session_id.clone());
+    live.app.open_feed(a.clone());
+    live.app.open_feed(b.clone());
+    live.app.query.available_only = true;
+    live.start();
+    live.until(|app| app.feeds[&FeedTarget::All].snapshot.total == 4);
+
+    live.click_type("Image");
+    live.until(|app| {
+        app.feeds[&FeedTarget::All].snapshot.total == 1
+            && contains(app, &a, &image.id)
+            && app.feeds[&b].snapshot.total == 0
+    });
+    live.click_type("PDF");
+    live.until(|app| {
+        app.feeds[&FeedTarget::All].snapshot.total == 3
+            && contains(app, &a, &image.id)
+            && contains(app, &a, &pdf.id)
+            && contains(app, &b, &other.id)
+    });
+    assert!(type_filters::selected(&live.app.query, "Image"));
+    assert!(type_filters::selected(&live.app.query, "PDF"));
+    assert!(!type_filters::selected(&live.app.query, "All"));
+    let output = live.frame(vec![]);
+    let text: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.iter().any(|text| text.contains("first.png")));
+    assert!(text.iter().any(|text| text.contains("first.pdf")));
+    assert!(!text.iter().any(|text| text.contains("excluded.md")));
+    live.app.columns.active = Some(a.clone());
+    for _ in 0..3 {
+        live.app.navigate_artifact(true);
+        assert_ne!(live.app.selected.as_deref(), Some(note.id.as_str()));
+    }
+
+    live.image("new-image.png");
+    let new_image = live.publish("new-image.png", "b");
+    std::fs::write(live.root.path().join("new-document.pdf"), "synthetic PDF").unwrap();
+    let new_pdf = live.publish("new-document.pdf", "b");
+    live.until(|app| {
+        app.feeds[&FeedTarget::All].snapshot.total == 5
+            && contains(app, &b, &new_image.id)
+            && contains(app, &b, &new_pdf.id)
+    });
+    live.rendered(&new_image);
+    live.rendered(&new_pdf);
+    live.click_type("Image");
+    live.until(|app| {
+        app.feeds[&FeedTarget::All].snapshot.total == 3
+            && !contains(app, &a, &image.id)
+            && !contains(app, &b, &new_image.id)
+    });
+    live.click_type("PDF");
+    live.until(|app| app.feeds[&FeedTarget::All].snapshot.total == 6);
+    assert!(type_filters::selected(&live.app.query, "All"));
+    live.click_type("Image");
+    live.until(|app| app.feeds[&FeedTarget::All].snapshot.total == 2);
+    live.click_type("PDF");
+    live.until(|app| app.feeds[&FeedTarget::All].snapshot.total == 5);
+    live.click_type("All");
+    live.until(|app| app.feeds[&FeedTarget::All].snapshot.total == 6);
+    assert!(live.app.query.kinds.is_empty());
+}
+
+#[test]
+fn new_discovered_resources_move_the_session_left_while_reading_keeps_order_stable() {
+    let mut live = Live::new();
+    live.image("a.png");
+    let a = live.publish("a.png", "a");
+    thread::sleep(Duration::from_millis(2));
+    live.image("b.png");
+    let b = live.publish("b.png", "b");
+    let ta = FeedTarget::Session(a.session_id.clone());
+    let tb = FeedTarget::Session(b.session_id.clone());
+    live.app.open_feed(ta.clone());
+    live.app.open_feed(tb.clone());
+    live.app.columns.newest_first = true;
+    live.change(|s| {
+        s.store
+            .set_discovery_config(&crate::discovery::Config {
+                enabled: true,
+                sessions: Some(vec![a.session_id.clone()]),
+                ..Default::default()
+            })
+            .unwrap()
+    });
+    live.start();
+    live.until(|app| contains(app, &ta, &a.id) && contains(app, &tb, &b.id));
+    let order = vec![tb.clone(), ta.clone(), FeedTarget::All];
+    assert_eq!(
+        live.app.columns.display_order(&live.app.snapshot.sessions),
+        order
+    );
+    live.app.select_resource(&a, 0);
+    live.until(|app| {
+        app.feeds[&ta]
+            .snapshot
+            .posts
+            .iter()
+            .any(|p| p.id == a.id && p.read)
+    });
+    assert_eq!(
+        live.app.columns.display_order(&live.app.snapshot.sessions),
+        order
+    );
+    thread::sleep(Duration::from_millis(2));
+    live.image("new.png");
+    let discovered = live.change(|s| {
+        let result = s
+            .store
+            .ingest(&crate::discovery::Input {
+                session_id: a.session_id.clone(),
+                text: "Ready: ./new.png".into(),
+                source: "synthetic completed output".into(),
+            })
+            .unwrap();
+        s.store.get(&result.created[0]).unwrap()
+    });
+    live.until(|app| contains(app, &ta, &discovered.id));
+    live.rendered(&discovered);
+    // A file becoming ready later is also fresh session activity.
+    thread::sleep(Duration::from_millis(2));
+    live.image("b-later.png");
+    let latest_b = live.publish("b-later.png", "b");
+    live.until(|app| contains(app, &tb, &latest_b.id));
+    assert_eq!(
+        live.app.columns.display_order(&live.app.snapshot.sessions)[0],
+        tb
+    );
+    thread::sleep(Duration::from_millis(2));
+    live.change(|s| s.store.settle_mention(&discovered.id).unwrap());
+    live.until(|app| {
+        app.feeds[&ta]
+            .snapshot
+            .posts
+            .iter()
+            .any(|p| p.id == discovered.id && p.readiness == "ready")
+    });
+    assert_eq!(
+        live.app.columns.display_order(&live.app.snapshot.sessions),
+        vec![ta.clone(), tb, FeedTarget::All]
+    );
+    assert_eq!(live.app.selected.as_deref(), Some(a.id.as_str()));
+    assert_eq!(
+        live.app.columns.order,
+        vec![FeedTarget::All, ta, FeedTarget::Session(b.session_id)]
+    );
 }
 
 #[test]
