@@ -2,9 +2,9 @@
 
 A dark, terminal-inspired native Rust desktop feed for agent deliverables. Feedr puts reports, media, builds and preview links in compact, session-colored columns so you can open them without copying paths from a terminal. It works directly with Claude Code and Codex; [herdr](https://herdr.dev) adds live session tracking and optional mention discovery.
 
-![Feedr's native desktop UI with two session-colored feed columns, compact artifact rows, and an image open in the sidebar.](docs/assets/feedr-hero.png)
+![Feedr's current native desktop UI with compact session rows, two session-colored feed columns, and the synthwave launch artwork open in the preview sidebar.](docs/assets/feedr-hero.png)
 
-*Native macOS app with demo sessions and artifacts.*
+*Native macOS development build with synthetic demo sessions and sample artifacts.*
 
 This public preview includes a persistent SQLite-backed service, live herdr sessions, MCP/CLI publishing, search and filters, pins/archive/read state, built-in image/Markdown/PDF/video previews, native open/reveal actions, and optional deterministic mention discovery. Remote artifact transfer, tray notifications and the public viewer contribution API are still planned.
 
