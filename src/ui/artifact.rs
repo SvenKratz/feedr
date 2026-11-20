@@ -1,5 +1,5 @@
 //! Resource surfaces are the primary click targets in the feed.
-use super::{BLUE, INK, MUTED, Preview, age, load_preview, opens_in_sidebar, resource_text};
+use super::{Palette, Preview, age, load_preview, opens_in_sidebar, resource_text};
 use crate::model::{Post, Resource, ResourceKind};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -168,6 +168,7 @@ impl Artifacts {
         index: usize,
         options: RowOptions,
     ) -> egui::Response {
+        let colors = Palette::get(ui.ctx());
         let inline = opens_in_sidebar(r);
         let (_, rect) = ui.allocate_space(Vec2::new(options.width.max(0.), ROW_HEIGHT));
         let response = ui.interact(
@@ -194,7 +195,7 @@ impl Artifacts {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter_at(rect);
             if response.hovered() || response.has_focus() {
-                painter.rect_filled(rect, 0., Color32::from_rgb(29, 43, 52));
+                painter.rect_filled(rect, 0., colors.hover);
             }
             // Every row reserves the same visual column, including while a
             // thumbnail is loading or unavailable. Smaller icons are centered
@@ -229,11 +230,11 @@ impl Artifacts {
                             Color32::WHITE,
                         );
                         if r.file_type() == "Video" {
-                            video_badge(&painter, visual);
+                            video_badge(&painter, visual, colors);
                         }
                     }
                     Content::Text { rendered, source } => {
-                        icon(&painter, icon_rect, r);
+                        icon(&painter, icon_rect, r, colors.accent);
                         caption = if options.render_markdown {
                             rendered.clone()
                         } else {
@@ -241,17 +242,17 @@ impl Artifacts {
                         };
                     }
                     Content::Loading => {
-                        icon(&painter, icon_rect, r);
+                        icon(&painter, icon_rect, r, colors.accent);
                         caption = "Loading preview…".into();
                     }
                     Content::Unavailable(message) => {
-                        icon(&painter, icon_rect, r);
+                        icon(&painter, icon_rect, r, colors.accent);
                         caption = "Preview unavailable".into();
                         problem = Some(message.clone());
                     }
                 }
             } else {
-                icon(&painter, icon_rect, r);
+                icon(&painter, icon_rect, r, colors.accent);
             }
             caption = format!("{readiness}{caption}");
             let name_width = (rect.right() - left - 86.).max(0.);
@@ -267,7 +268,7 @@ impl Artifacts {
                 name_width,
                 &name,
                 13.,
-                INK,
+                colors.ink,
             );
             paint_line(
                 ui,
@@ -276,7 +277,7 @@ impl Artifacts {
                 caption_width,
                 &caption,
                 11.,
-                MUTED,
+                colors.muted,
             );
             let timestamp = age(p.created_at)
                 .replace(" ago", "")
@@ -286,11 +287,11 @@ impl Artifacts {
                 Align2::RIGHT_TOP,
                 timestamp,
                 FontId::monospace(10.),
-                MUTED,
+                colors.muted,
             );
             let status_x = rect.right() - 63.;
             if !p.read {
-                painter.circle_filled(Pos2::new(status_x, rect.top() + 12.), 2., BLUE);
+                painter.circle_filled(Pos2::new(status_x, rect.top() + 12.), 2., colors.accent);
             }
             if p.pinned {
                 painter.text(
@@ -298,21 +299,28 @@ impl Artifacts {
                     Align2::RIGHT_TOP,
                     "◆",
                     FontId::monospace(10.),
-                    MUTED,
+                    colors.muted,
                 );
             }
             if p.discovery.is_some() {
                 painter.circle_stroke(
                     Pos2::new(status_x - 6., rect.top() + 12.),
                     2.,
-                    Stroke::new(1.0_f32, MUTED),
+                    Stroke::new(1.0_f32, colors.muted),
                 );
             }
-            if options.selected {
+            if options.selected || response.has_focus() {
                 painter.rect_stroke(
                     rect,
                     0.,
-                    Stroke::new(1.0_f32, MUTED),
+                    Stroke::new(
+                        1.0_f32,
+                        if response.has_focus() {
+                            colors.accent
+                        } else {
+                            colors.muted
+                        },
+                    ),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -429,9 +437,9 @@ fn excerpt(text: &str, rendered: bool) -> String {
         .collect()
 }
 
-fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
+fn icon(p: &egui::Painter, r: Rect, resource: &Resource, accent: Color32) {
     let at = |x: f32, y: f32| r.min + Vec2::new(x * r.width(), y * r.height());
-    let stroke = Stroke::new(1.5_f32, BLUE);
+    let stroke = Stroke::new(1.5_f32, accent);
     match resource.kind {
         ResourceKind::Folder => {
             let points = vec![
@@ -444,7 +452,7 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
             ];
             p.add(egui::Shape::convex_polygon(
                 points,
-                BLUE.gamma_multiply(0.16),
+                accent.gamma_multiply(0.16),
                 stroke,
             ));
             p.line_segment([at(0.05, 0.4), at(0.95, 0.4)], stroke);
@@ -462,7 +470,11 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
             p.rect_stroke(r.shrink(2.), 5., stroke, egui::StrokeKind::Inside);
             for x in [0.3, 0.7] {
                 for y in [0.3, 0.7] {
-                    p.rect_filled(Rect::from_center_size(at(x, y), r.size() * 0.20), 2., BLUE);
+                    p.rect_filled(
+                        Rect::from_center_size(at(x, y), r.size() * 0.20),
+                        2.,
+                        accent,
+                    );
                 }
             }
         }
@@ -471,7 +483,7 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
                 p.add(egui::Shape::ellipse_filled(
                     at(x, y),
                     Vec2::new(r.width() * 0.16, r.height() * 0.11),
-                    BLUE,
+                    accent,
                 ));
             }
             p.line_segment([at(0.41, 0.77), at(0.41, 0.19)], stroke);
@@ -488,12 +500,16 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
             );
             p.add(egui::Shape::convex_polygon(
                 vec![at(0.40, 0.34), at(0.40, 0.66), at(0.67, 0.50)],
-                BLUE,
+                accent,
                 Stroke::NONE,
             ));
             for x in [0.16, 0.84] {
                 for y in [0.31, 0.50, 0.69] {
-                    p.rect_filled(Rect::from_center_size(at(x, y), r.size() * 0.07), 0., BLUE);
+                    p.rect_filled(
+                        Rect::from_center_size(at(x, y), r.size() * 0.07),
+                        0.,
+                        accent,
+                    );
                 }
             }
         }
@@ -507,7 +523,7 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
             ];
             p.add(egui::Shape::convex_polygon(
                 points,
-                BLUE.gamma_multiply(0.1),
+                accent.gamma_multiply(0.1),
                 stroke,
             ));
             p.line_segment([at(0.62, 0.04), at(0.62, 0.27)], stroke);
@@ -518,17 +534,17 @@ fn icon(p: &egui::Painter, r: Rect, resource: &Resource) {
     }
 }
 
-fn video_badge(p: &egui::Painter, thumbnail: Rect) {
+fn video_badge(p: &egui::Painter, thumbnail: Rect, colors: Palette) {
     let center = thumbnail.right_bottom() - Vec2::splat(6.);
-    p.circle_filled(center, 6., super::PANEL);
-    p.circle_stroke(center, 6., Stroke::new(1.0_f32, BLUE));
+    p.circle_filled(center, 6., colors.panel);
+    p.circle_stroke(center, 6., Stroke::new(1.0_f32, colors.accent));
     p.add(egui::Shape::convex_polygon(
         vec![
             center + Vec2::new(-1.5, -2.5),
             center + Vec2::new(-1.5, 2.5),
             center + Vec2::new(2.5, 0.),
         ],
-        BLUE,
+        colors.accent,
         Stroke::NONE,
     ));
 }
@@ -670,7 +686,7 @@ mod tests {
         tx.send(Finished {
             key: key.clone(),
             stamp: current,
-            preview: Preview::Image(egui::ColorImage::filled([8, 4], BLUE)),
+            preview: Preview::Image(egui::ColorImage::filled([8, 4], Color32::LIGHT_BLUE)),
         })
         .unwrap();
         cache.receive(&ctx);

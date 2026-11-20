@@ -1,4 +1,4 @@
-use super::{BLUE, INK, MUTED};
+use super::Palette;
 use crate::update::{self, Github, Plan, Release};
 use eframe::egui::{self, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
@@ -227,6 +227,7 @@ impl Updates {
         result.err().map(|e| format!("{e:#}"))
     }
     pub fn button(&mut self, ui: &mut egui::Ui) {
+        let colors = Palette::get(ui.ctx());
         let label = match self.phase {
             Phase::Checking => "Checking…",
             Phase::Downloading(..) => "Downloading update…",
@@ -238,9 +239,9 @@ impl Updates {
         if ui
             .add(
                 egui::Button::new(RichText::new(label).size(11.).color(if self.newer() {
-                    BLUE
+                    colors.accent
                 } else {
-                    MUTED
+                    colors.muted
                 }))
                 .frame(false),
             )
@@ -254,6 +255,7 @@ impl Updates {
         }
     }
     pub fn help_summary(&mut self, ui: &mut egui::Ui) {
+        let colors = Palette::get(ui.ctx());
         if self.automatic && !self.checked && matches!(self.phase, Phase::Idle) {
             self.check(ui.ctx());
         }
@@ -285,18 +287,18 @@ impl Updates {
                 RichText::new(concat!("Feedr v", env!("CARGO_PKG_VERSION")))
                     .strong()
                     .size(12.)
-                    .color(INK),
+                    .color(colors.ink),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
                         egui::Button::new(RichText::new(status).size(12.).color(
                             if matches!(self.phase, Phase::Error(_)) {
-                                egui::Color32::from_rgb(235, 166, 142)
+                                colors.warning
                             } else if self.newer() {
-                                BLUE
+                                colors.accent
                             } else {
-                                MUTED
+                                colors.muted
                             },
                         ))
                         .frame(false),
@@ -313,6 +315,7 @@ impl Updates {
         });
     }
     pub fn show(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         if !self.open {
             return;
         }
@@ -354,7 +357,7 @@ impl Updates {
                         "Checks every 6 hours. Feedr restarts after a verified update."
                     })
                     .size(11.)
-                    .color(MUTED),
+                    .color(colors.muted),
                 );
                 ui.add_space(10.);
                 match &mut self.phase {
@@ -396,7 +399,7 @@ impl Updates {
                         });
                     }
                     Phase::Error(message) => {
-                        ui.colored_label(egui::Color32::from_rgb(235, 166, 142), message.as_str());
+                        ui.colored_label(colors.warning, message.as_str());
                     }
                     Phase::Idle => {
                         ui.label(if self.newer() {
@@ -412,7 +415,7 @@ impl Updates {
                 }
                 if self.newer() && !self.busy() {
                     if let Some(issue) = self.installation_issue() {
-                        ui.label(RichText::new(issue).size(12.).color(MUTED));
+                        ui.label(RichText::new(issue).size(12.).color(colors.muted));
                     } else if ui.button("Download update").clicked() {
                         self.download(ctx);
                     }
@@ -441,13 +444,13 @@ impl Updates {
                                 .unwrap_or(&release.tag_name),
                         )
                         .strong()
-                        .color(INK),
+                        .color(colors.ink),
                     );
                     if let Some(date) = &release.published_at {
                         ui.label(
                             RichText::new(date.split('T').next().unwrap_or(date))
                                 .size(11.)
-                                .color(MUTED),
+                                .color(colors.muted),
                         );
                     }
                     egui::ScrollArea::vertical()

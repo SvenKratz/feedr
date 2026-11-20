@@ -1,6 +1,5 @@
 //! Muted mineral colors keep session identity consistent across the feed.
-use super::PANEL;
-use eframe::egui::Color32;
+use eframe::egui::{Color32, Theme};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -8,56 +7,74 @@ use std::collections::HashMap;
 pub(super) struct SessionColor {
     pub id: &'static str,
     pub name: &'static str,
+    dark: Swatch,
+    light: Swatch,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Swatch {
     pub accent: Color32,
     pub background: Color32,
+}
+
+impl Swatch {
+    const fn new(accent: [u8; 3], background: [u8; 3]) -> Self {
+        Self {
+            accent: Color32::from_rgb(accent[0], accent[1], accent[2]),
+            background: Color32::from_rgb(background[0], background[1], background[2]),
+        }
+    }
+
+    pub fn highlighted(self) -> Color32 {
+        self.background.lerp_to_gamma(self.accent, 0.14)
+    }
 }
 
 pub(super) const PALETTE: [SessionColor; 6] = [
     SessionColor {
         id: "sea-glass",
         name: "Sea glass",
-        accent: Color32::from_rgb(117, 178, 177),
-        background: Color32::from_rgb(24, 43, 45),
+        dark: Swatch::new([117, 178, 177], [24, 43, 45]),
+        light: Swatch::new([30, 81, 80], [220, 239, 237]),
     },
     SessionColor {
         id: "jade",
         name: "Jade",
-        accent: Color32::from_rgb(147, 182, 150),
-        background: Color32::from_rgb(30, 43, 33),
+        dark: Swatch::new([147, 182, 150], [30, 43, 33]),
+        light: Swatch::new([44, 79, 51], [226, 239, 226]),
     },
     SessionColor {
         id: "slate",
         name: "Slate",
-        accent: Color32::from_rgb(143, 172, 204),
-        background: Color32::from_rgb(28, 38, 54),
+        dark: Swatch::new([143, 172, 204], [28, 38, 54]),
+        light: Swatch::new([41, 70, 103], [224, 234, 246]),
     },
     SessionColor {
         id: "iris",
         name: "Iris",
-        accent: Color32::from_rgb(175, 159, 199),
-        background: Color32::from_rgb(40, 33, 51),
+        dark: Swatch::new([175, 159, 199], [40, 33, 51]),
+        light: Swatch::new([78, 57, 110], [236, 229, 245]),
     },
     SessionColor {
         id: "rose-quartz",
         name: "Rose quartz",
-        accent: Color32::from_rgb(196, 156, 174),
-        background: Color32::from_rgb(48, 33, 43),
+        dark: Swatch::new([196, 156, 174], [48, 33, 43]),
+        light: Swatch::new([103, 52, 73], [246, 228, 235]),
     },
     SessionColor {
         id: "brass",
         name: "Brass",
-        accent: Color32::from_rgb(195, 175, 124),
-        background: Color32::from_rgb(45, 41, 29),
+        dark: Swatch::new([195, 175, 124], [45, 41, 29]),
+        light: Swatch::new([87, 69, 25], [244, 236, 214]),
     },
 ];
 
 impl SessionColor {
-    pub fn highlighted(self) -> Color32 {
-        self.background.lerp_to_gamma(self.accent, 0.14)
-    }
-
-    pub fn sidebar(self) -> Color32 {
-        self.background.lerp_to_gamma(PANEL, 0.12)
+    pub fn swatch(self, theme: Theme) -> Swatch {
+        match theme {
+            Theme::Dark => self.dark,
+            Theme::Light => self.light,
+        }
     }
 }
 

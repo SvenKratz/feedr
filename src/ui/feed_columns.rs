@@ -46,6 +46,8 @@ pub(super) struct Layout {
     pub active: Option<Target>,
     #[serde(default)]
     pub newest_first: bool,
+    #[serde(skip)]
+    sidebar_focus: Option<Target>,
 }
 impl Default for Layout {
     fn default() -> Self {
@@ -53,6 +55,7 @@ impl Default for Layout {
             order: vec![Target::All],
             active: Some(Target::All),
             newest_first: false,
+            sidebar_focus: None,
         }
     }
 }
@@ -64,8 +67,7 @@ impl Layout {
                 .iter()
                 .map(|session| (session.id.as_str(), session.last_activity_at))
                 .collect();
-            // Stable ties retain the user's manual order; the catchall must
-            // leave the very first slot available for a session.
+            // Stable ties retain the user's manual order. The catchall goes last.
             order.sort_by(|a, b| match (a, b) {
                 (Target::All, Target::All) => std::cmp::Ordering::Equal,
                 (Target::All, _) => std::cmp::Ordering::Greater,
@@ -76,8 +78,18 @@ impl Layout {
                     .flatten()
                     .cmp(&activity.get(a.as_str()).copied().flatten()),
             });
+            if let Some(focused) = &self.sidebar_focus
+                && let Some(index) = order.iter().position(|target| target == focused)
+            {
+                order[..=index].rotate_right(1);
+            }
         }
         order
+    }
+
+    pub fn toggle_newest_first(&mut self) {
+        self.newest_first = !self.newest_first;
+        self.sidebar_focus = None;
     }
 
     pub fn drag_to(
@@ -98,7 +110,7 @@ impl Layout {
             // arrangement the user grabbed, even if activity changed mid-drag.
             self.order = displayed.to_vec();
             self.normalize();
-            self.newest_first = false;
+            self.toggle_newest_first();
         }
         self.move_to(source, destination, after);
     }
@@ -120,11 +132,22 @@ impl Layout {
         }
         self.active = Some(target);
     }
+    pub fn open_first(&mut self, target: Target) {
+        self.open(target.clone());
+        if self.newest_first {
+            self.sidebar_focus = Some(target);
+        } else if let Some(index) = self.order.iter().position(|open| *open == target) {
+            self.order[..=index].rotate_right(1);
+        }
+    }
     pub fn close(&mut self, target: &Target) {
         let Some(index) = self.order.iter().position(|t| t == target) else {
             return;
         };
         self.order.remove(index);
+        if self.sidebar_focus.as_ref() == Some(target) {
+            self.sidebar_focus = None;
+        }
         if self.active.as_ref() == Some(target) {
             self.active = self
                 .order
@@ -187,6 +210,7 @@ mod tests {
             order: manual.clone(),
             active: Some(Target::Session("a".into())),
             newest_first: true,
+            ..Layout::default()
         };
         let sessions = vec![
             session("a", Some(100)),
@@ -234,6 +258,7 @@ mod tests {
             order: vec![Target::All, a.clone(), b.clone()],
             active: Some(a.clone()),
             newest_first: true,
+            ..Layout::default()
         };
         let visible = vec![b.clone(), a.clone(), Target::All];
         layout.drag_to(&visible, &b, &Target::All, true);

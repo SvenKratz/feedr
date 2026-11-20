@@ -1,5 +1,5 @@
 //! Compact artifact identity and actions; the document gets the visual emphasis.
-use super::{BLUE, INK, LINE, MUTED, resource_text};
+use super::{Palette, resource_text};
 use crate::model::{Post, Resource, ResourceKind};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Stroke, Vec2};
 
@@ -35,6 +35,7 @@ pub(super) struct Header<'a> {
 
 impl Header<'_> {
     pub fn show(self, ui: &mut egui::Ui) -> Actions {
+        let colors = Palette::get(ui.ctx());
         let mut actions = Actions::default();
         let r = self.resource;
         let media = matches!(r.file_type(), "Image" | "Video");
@@ -74,7 +75,9 @@ impl Header<'_> {
                             let mut index = self.index;
                             let combo = egui::ComboBox::from_id_salt("viewer-attachment")
                                 .width(width)
-                                .selected_text(RichText::new(&name).size(15.).strong().color(INK))
+                                .selected_text(
+                                    RichText::new(&name).size(15.).strong().color(colors.ink),
+                                )
                                 .truncate()
                                 .show_ui(ui, |ui| {
                                     for (i, resource) in self.post.resources.iter().enumerate() {
@@ -132,7 +135,8 @@ impl Header<'_> {
                             resource_text::tail(ui, &r.target, 11., width)
                         };
                         ui.add(
-                            egui::Label::new(RichText::new(text).size(11.).color(MUTED)).truncate(),
+                            egui::Label::new(RichText::new(text).size(11.).color(colors.muted))
+                                .truncate(),
                         )
                         .on_hover_text(&r.target);
                     },
@@ -152,7 +156,7 @@ impl Header<'_> {
                 ui.add_space(3.);
                 ui.horizontal(|ui| {
                     egui::Frame::new()
-                        .fill(super::PAPER)
+                        .fill(colors.paper)
                         .corner_radius(4)
                         .inner_margin(2)
                         .show(ui, |ui| {
@@ -161,19 +165,10 @@ impl Header<'_> {
                                 let active = *self.render_markdown == rendered;
                                 let response = ui.add_sized(
                                     [64., 23.],
-                                    egui::Button::new(
-                                        RichText::new(label).size(11.).color(if active {
-                                            INK
-                                        } else {
-                                            MUTED
-                                        }),
+                                    egui::Button::selectable(
+                                        active,
+                                        RichText::new(label).size(11.),
                                     )
-                                    .fill(if active {
-                                        Color32::from_rgb(36, 56, 66)
-                                    } else {
-                                        Color32::TRANSPARENT
-                                    })
-                                    .stroke(Stroke::NONE)
                                     .corner_radius(3),
                                 );
                                 response.widget_info(|| {
@@ -216,14 +211,18 @@ impl Header<'_> {
         });
         ui.add_space(7.);
         let rect = ui.available_rect_before_wrap();
-        ui.painter()
-            .hline(rect.x_range(), rect.top(), Stroke::new(1.0_f32, LINE));
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(1.0_f32, colors.line),
+        );
         ui.add_space(10.);
         actions
     }
 }
 
 pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    let colors = Palette::get(ui.ctx());
     let response = ui.add_sized([26., 26.], egui::Button::new("").frame(false));
     let rect = response.rect;
     #[cfg(test)]
@@ -234,23 +233,22 @@ pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::R
     });
     let active = response.hovered() || response.has_focus();
     if active {
-        ui.painter()
-            .rect_filled(rect, 4., Color32::from_rgb(34, 50, 61));
+        ui.painter().rect_filled(rect, 4., colors.hover);
     }
     if response.has_focus() {
         ui.painter().rect_stroke(
             rect,
             4.,
-            Stroke::new(1.0_f32, BLUE),
+            Stroke::new(1.0_f32, colors.accent),
             egui::StrokeKind::Inside,
         );
     }
     let color = if !ui.is_enabled() {
-        MUTED.gamma_multiply(0.35)
+        colors.muted.gamma_multiply(0.35)
     } else if active {
-        INK
+        colors.ink
     } else {
-        MUTED
+        colors.muted
     };
     paint_icon(
         ui.painter(),
@@ -436,7 +434,7 @@ mod tests {
                             post,
                             resource: &post.resources[0],
                             index: 0,
-                            accent: BLUE,
+                            accent: Palette::get(ctx).accent,
                             render_markdown: rendered,
                             source: Some("# Original Markdown\n\n**Preserve source.**"),
                         }

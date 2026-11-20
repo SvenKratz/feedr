@@ -1,7 +1,7 @@
 //! Match herdr's native workspace order and status/transition priority.
-use super::{BLUE, INK, MUTED, PANEL, session_color::SessionColor};
+use super::{Palette, session_color::SessionColor};
 use crate::model::Session;
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -100,24 +100,27 @@ pub(super) fn row(
     selected: bool,
     current: i64,
 ) -> egui::Response {
+    let colors = Palette::get(ui.ctx());
+    let swatch = color.swatch(ui.ctx().theme());
+    let sidebar_fill = swatch.background.lerp_to_gamma(colors.panel, 0.12);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::click(),
     );
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let fill = if selected {
-        color.highlighted()
+        swatch.highlighted()
     } else if response.hovered() {
-        color.sidebar()
+        sidebar_fill
     } else {
-        color.sidebar().lerp_to_gamma(PANEL, 0.72)
+        sidebar_fill.lerp_to_gamma(colors.panel, 0.72)
     };
     painter.rect_filled(rect, 3., fill);
     if selected || response.has_focus() {
         painter.rect_stroke(
             rect.shrink(0.5),
             3.,
-            egui::Stroke::new(1.0_f32, color.accent),
+            egui::Stroke::new(1.0_f32, swatch.accent),
             egui::StrokeKind::Inside,
         );
         painter.rect_filled(
@@ -126,7 +129,7 @@ pub(super) fn row(
                 egui::pos2(rect.left() + 2., rect.bottom() - 4.),
             ),
             1.,
-            color.accent,
+            swatch.accent,
         );
     }
     let center = rect.min + egui::vec2(11., 11.);
@@ -136,10 +139,10 @@ pub(super) fn row(
         "offline"
     };
     let ink = match status {
-        "working" => BLUE,
-        "done" | "idle" => Color32::from_rgb(147, 182, 150),
-        "blocked" => Color32::from_rgb(235, 166, 142),
-        _ => MUTED,
+        "working" => colors.accent,
+        "done" | "idle" => colors.success,
+        "blocked" => colors.warning,
+        _ => colors.muted,
     };
     let stroke = egui::Stroke::new(1.4_f32, ink);
     match status {
@@ -190,7 +193,7 @@ pub(super) fn row(
         )
         .size(13.)
         .strong()
-        .color(INK),
+        .color(colors.ink),
     )
     .into_galley(
         ui,
@@ -198,9 +201,9 @@ pub(super) fn row(
         (right - left).max(0.),
         egui::TextStyle::Body,
     );
-    painter.galley(egui::pos2(left, rect.top() + 2.), title, INK);
+    painter.galley(egui::pos2(left, rect.top() + 2.), title, colors.ink);
     let age = recency(session.last_activity_at, current);
-    let time = painter.layout_no_wrap(age.clone(), egui::FontId::monospace(11.), MUTED);
+    let time = painter.layout_no_wrap(age.clone(), egui::FontId::monospace(11.), colors.muted);
     let time_left = right - time.size().x;
     let secondary = egui::WidgetText::from(
         RichText::new(
@@ -210,7 +213,7 @@ pub(super) fn row(
                 .join(" "),
         )
         .size(11.)
-        .color(MUTED),
+        .color(colors.muted),
     )
     .into_galley(
         ui,
@@ -218,8 +221,8 @@ pub(super) fn row(
         (time_left - left - 8.).max(0.),
         egui::TextStyle::Body,
     );
-    painter.galley(egui::pos2(left, rect.top() + 20.), secondary, MUTED);
-    painter.galley(egui::pos2(time_left, rect.top() + 20.), time, MUTED);
+    painter.galley(egui::pos2(left, rect.top() + 20.), secondary, colors.muted);
+    painter.galley(egui::pos2(time_left, rect.top() + 20.), time, colors.muted);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,

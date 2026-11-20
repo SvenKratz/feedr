@@ -1,4 +1,4 @@
-use super::{BLUE, MUTED};
+use super::Palette;
 use crate::{
     agent_setup::{self, Agent, Profile, Status},
     cli_install,
@@ -64,6 +64,7 @@ impl Setup {
         open: &mut bool,
         updates: &mut super::updates::Updates,
     ) {
+        let colors = Palette::get(ctx);
         if self.first_launch {
             *open = true;
             self.first_launch = false;
@@ -148,7 +149,7 @@ impl Setup {
                     ui.separator();
                     ui.add_space(4.);
                     ui.label("Connect an agent to receive finished reports, media, builds and preview links.");
-                    ui.label(RichText::new("Works across projects. Herdr and discovery are optional.").small().color(MUTED));
+                    ui.label(RichText::new("Works across projects. Herdr and discovery are optional.").small().color(colors.muted));
                     ui.add_space(10.);
                     egui::ScrollArea::vertical().max_height((ctx.available_rect().height() - if telemetry::available() { 270. } else { 210. }).clamp(160., 560.)).show(ui, |ui| {
                         self.agent_rows(ui);
@@ -157,7 +158,7 @@ impl Setup {
                             ui.checkbox(&mut self.reminders, "Remind agents about missed shares");
                         });
                         if self.reminders && self.selected[1] {
-                            ui.label(RichText::new("Codex: after restarting, use /hooks to review and trust Feedr's reminders.").small().color(MUTED));
+                            ui.label(RichText::new("Codex: after restarting, use /hooks to review and trust Feedr's reminders.").small().color(colors.muted));
                         }
                         ui.collapsing("What agents will share", |ui| {
                             ui.label("Finished documents, images, video, audio, builds, output folders and preview links. Routine source edits, logs and scratch files stay out.");
@@ -167,10 +168,10 @@ impl Setup {
                             for status in &self.statuses {
                                 if self.selected[if status.agent == Agent::Claude { 0 } else { 1 }] {
                                     ui.label(RichText::new(status.agent.name()).strong());
-                                    for file in &status.files { ui.label(RichText::new(file.display().to_string()).small().color(MUTED)); }
+                                    for file in &status.files { ui.label(RichText::new(file.display().to_string()).small().color(colors.muted)); }
                                 }
                             }
-                            ui.label(RichText::new("Existing settings are preserved. Backups stay in Feedr's private data folder.").small().color(MUTED));
+                            ui.label(RichText::new("Existing settings are preserved. Backups stay in Feedr's private data folder.").small().color(colors.muted));
                         });
                         ui.collapsing("Manual MCP configuration", |ui| match &self.mcp {
                             Ok(mcp) => {
@@ -185,11 +186,18 @@ impl Setup {
                         ui.add_space(8.);
                         self.usage_statistics(ui);
                     }
-                    if let Some(message) = &self.message { ui.add_space(8.); ui.label(RichText::new(message).color(BLUE)); }
+                    if let Some(message) = &self.message { ui.add_space(8.); ui.label(RichText::new(message).color(colors.accent)); }
                     ui.add_space(10.);
                     ui.horizontal_wrapped(|ui| {
                         let busy = self.events.is_some();
-                        if ui.add_enabled(!busy && self.detected && self.selected.iter().any(|selected| *selected), egui::Button::new("Enable publishing")).clicked() {
+                        let can_enable = !busy && self.detected && self.selected.iter().any(|selected| *selected);
+                        let enable = ui.scope(|ui| {
+                            let visuals = ui.visuals_mut();
+                            visuals.widgets.inactive.weak_bg_fill = visuals.selection.bg_fill;
+                            visuals.widgets.inactive.bg_stroke = visuals.selection.stroke;
+                            ui.add_enabled(can_enable, egui::Button::new(RichText::new("Enable publishing").strong()))
+                        }).inner;
+                        if enable.clicked() {
                             self.apply(ctx, None);
                         }
                         if ui.add_enabled(!busy, egui::Button::new("Send test share")).clicked() {
@@ -233,16 +241,16 @@ impl Setup {
                 .open(&mut cli_open).default_width(460.).show(ctx, |ui| {
                     ui.label("Use feedr from Terminal and agent shells.");
                     ui.add_space(4.);
-                    ui.label(RichText::new("Links ~/.local/bin/feedr to this app and configures PATH for new terminal windows.").small().color(MUTED));
+                    ui.label(RichText::new("Links ~/.local/bin/feedr to this app and configures PATH for new terminal windows.").small().color(colors.muted));
                     ui.add_space(10.);
                     if let Some(result) = &self.installed {
                         match result {
                             Ok(result) => {
-                                ui.colored_label(BLUE, "CLI installed");
+                                ui.colored_label(colors.accent, "CLI installed");
                                 ui.monospace(result.command.display().to_string());
                                 ui.label(&result.next_step);
                             }
-                            Err(error) => { ui.colored_label(egui::Color32::LIGHT_RED, error); }
+                            Err(error) => { ui.colored_label(colors.error, error); }
                         }
                     }
                     if self.installing.is_some() {
@@ -331,6 +339,7 @@ impl Setup {
         });
     }
     fn usage_statistics(&mut self, ui: &mut egui::Ui) {
+        let colors = Palette::get(ui.ctx());
         let blocked = telemetry::blocked_by();
         let mut share = self.share_usage && blocked.is_none();
         if ui
@@ -357,7 +366,7 @@ impl Setup {
                     None => "Each installation is counted once, anonymously. Daily statistics are off unless you turn them on: a random install ID, version, OS and action counts; never titles, paths, links, file contents or host names.".into(),
                 })
                 .small()
-                .color(MUTED),
+                .color(colors.muted),
             );
             if ui.small_button("Details").clicked() {
                 let _ = open::that_detached(telemetry::DETAILS_URL);
@@ -365,6 +374,7 @@ impl Setup {
         });
     }
     fn agent_rows(&mut self, ui: &mut egui::Ui) {
+        let colors = Palette::get(ui.ctx());
         let busy = self.events.is_some();
         let mut remove = None;
         for (index, agent) in Agent::ALL.into_iter().enumerate() {
@@ -396,9 +406,9 @@ impl Setup {
                         .small()
                         .color(
                             if status.is_some_and(Status::configured) {
-                                BLUE
+                                colors.accent
                             } else {
-                                MUTED
+                                colors.muted
                             },
                         ),
                     );
@@ -406,7 +416,7 @@ impl Setup {
             });
             if let Some(status) = status {
                 if let Some(error) = &status.issue {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    ui.colored_label(colors.error, error);
                 }
                 if status.configured() {
                     ui.label(
@@ -416,7 +426,7 @@ impl Setup {
                             "MCP connection and publishing rule configured"
                         })
                         .small()
-                        .color(MUTED),
+                        .color(colors.muted),
                     );
                 }
             }
@@ -435,8 +445,9 @@ fn snippet(
     id: usize,
     copied: &mut Option<(usize, Instant)>,
 ) {
+    let colors = Palette::get(ui.ctx());
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).strong().color(BLUE));
+        ui.label(RichText::new(label).strong().color(colors.accent));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let done = copied
                 .is_some_and(|(which, at)| which == id && at.elapsed() < Duration::from_secs(2));
@@ -450,7 +461,7 @@ fn snippet(
         });
     });
     egui::Frame::new()
-        .fill(egui::Color32::from_rgb(10, 20, 28))
+        .fill(ui.visuals().code_bg_color)
         .corner_radius(4)
         .inner_margin(9.)
         .show(ui, |ui| {

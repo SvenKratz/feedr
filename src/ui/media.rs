@@ -1,4 +1,5 @@
 //! Selected PDF/video viewers own their work and cancel it when closed.
+use super::Palette;
 use crate::media::{
     self,
     video::{Control, Player},
@@ -115,7 +116,7 @@ impl Pdf {
             }
         }
         if let Some(error) = &self.error {
-            ui.colored_label(super::MUTED, error);
+            ui.colored_label(ui.visuals().error_fg_color, error);
             return;
         }
         let Some(count) = self.count else {
@@ -142,7 +143,10 @@ impl Pdf {
         });
         ui.horizontal(|ui| {
             ui.label("Zoom");
-            ui.add(egui::Slider::new(&mut self.zoom, 0.25..=3.).logarithmic(true));
+            media_slider(
+                ui,
+                egui::Slider::new(&mut self.zoom, 0.25..=3.).logarithmic(true),
+            );
             if ui.small_button("Fit").clicked() {
                 self.zoom = 1.;
             }
@@ -179,13 +183,17 @@ impl Pdf {
                             {
                                 self.selected = page;
                             }
-                            ui.label(RichText::new(page.to_string()).small().color(super::MUTED));
+                            ui.label(
+                                RichText::new(page.to_string())
+                                    .small()
+                                    .color(Palette::get(ui.ctx()).muted),
+                            );
                         });
                     }
                 });
             });
         if let Some(error) = self.errors.get(&self.selected) {
-            ui.colored_label(super::MUTED, error);
+            ui.colored_label(ui.visuals().error_fg_color, error);
             return;
         }
         if let Some(texture) = self.textures.get(&self.selected) {
@@ -233,7 +241,7 @@ impl Video {
             }
         }
         if let Some(error) = status.error {
-            ui.label(error);
+            ui.colored_label(ui.visuals().error_fg_color, error);
             return false;
         }
         let mut clicked = false;
@@ -248,7 +256,7 @@ impl Video {
             );
             let (rect, response) = ui.allocate_exact_size(area, egui::Sense::click());
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 3., super::PANEL);
+            painter.rect_filled(rect, 3., Palette::get(ui.ctx()).panel);
             painter.image(
                 texture.id(),
                 egui::Rect::from_center_size(rect.center(), size * scale),
@@ -304,14 +312,15 @@ impl Video {
                     "No audio track"
                 })
                 .small()
-                .color(super::MUTED),
+                .color(Palette::get(ui.ctx()).muted),
             );
         });
         let position = &mut self.seek;
         if !self.seeking {
             *position = status.position;
         }
-        let seek = ui.add(
+        let seek = media_slider(
+            ui,
             egui::Slider::new(position, 0.0..=status.duration.max(0.001))
                 .show_value(false)
                 .text("Seek"),
@@ -324,9 +333,11 @@ impl Video {
             self.seeking = false;
         }
         let mut volume = status.volume;
-        if ui
-            .add(egui::Slider::new(&mut volume, 0.0..=100.).text("Volume"))
-            .changed()
+        if media_slider(
+            ui,
+            egui::Slider::new(&mut volume, 0.0..=100.).text("Volume"),
+        )
+        .changed()
         {
             self.player.control(Control::Volume(volume));
         }
@@ -334,6 +345,17 @@ impl Video {
             .request_repaint_after(std::time::Duration::from_millis(33));
         expanded
     }
+}
+
+fn media_slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        if !visuals.dark_mode {
+            visuals.widgets.inactive.bg_fill = visuals.widgets.inactive.bg_stroke.color;
+        }
+        ui.add(slider)
+    })
+    .inner
 }
 
 #[derive(Default)]
@@ -449,7 +471,7 @@ pub(super) fn image_canvas(
     pan = pan.clamp(-limit, limit);
     ui.ctx().data_mut(|data| data.insert_temp(id, pan));
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3., super::PANEL);
+    painter.rect_filled(rect, 3., Palette::get(ui.ctx()).panel);
     painter.image(
         texture.id(),
         egui::Rect::from_center_size(rect.center() + pan, displayed),
@@ -482,17 +504,14 @@ pub(super) fn image_preview(
     let mut changed = false;
     let mut font = egui::TextStyle::Body.resolve(ui.style());
     font.size = 11.;
-    let label_width = ui.fonts_mut(|fonts| {
-        fonts
-            .layout_no_wrap("Full res".into(), font, super::INK)
-            .size()
-            .x
-    });
+    let ink = Palette::get(ui.ctx()).ink;
+    let label_width =
+        ui.fonts_mut(|fonts| fonts.layout_no_wrap("Full res".into(), font, ink).size().x);
     let toolbar_width = 8. + 26. + 44. + 26. + 12. + 5. + 14. + 4. + label_width;
     ui.horizontal(|ui| {
         ui.add_space(((ui.available_width() - toolbar_width) * 0.5).max(0.));
         let toolbar = egui::Frame::new()
-            .fill(super::PAPER)
+            .fill(Palette::get(ui.ctx()).paper)
             .corner_radius(5)
             .inner_margin(egui::Margin::symmetric(4, 2))
             .show(ui, |ui| {
@@ -585,7 +604,7 @@ mod tests {
         let ctx = egui::Context::default();
         let texture = ctx.load_texture(
             "footer-test",
-            egui::ColorImage::filled([64, 32], super::super::BLUE),
+            egui::ColorImage::filled([64, 32], egui::Color32::LIGHT_BLUE),
             egui::TextureOptions::LINEAR,
         );
         let mut zoom = 1.;

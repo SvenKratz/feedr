@@ -1,6 +1,6 @@
 use crate::{broker::Client, model::*, platform};
 use anyhow::Result;
-use eframe::egui::{self, Color32, RichText, Vec2};
+use eframe::egui::{self, RichText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use serde_json::json;
 use std::{
@@ -29,16 +29,11 @@ mod session_color;
 mod session_list;
 mod session_updates;
 mod setup;
+mod theme;
+use theme::Palette;
 mod type_filters;
 mod updates;
 mod viewer_header;
-
-const INK: Color32 = Color32::from_rgb(217, 229, 238);
-const MUTED: Color32 = Color32::from_rgb(144, 164, 181);
-const BLUE: Color32 = Color32::from_rgb(121, 201, 203);
-const LINE: Color32 = Color32::from_rgb(43, 59, 73);
-const PAPER: Color32 = Color32::from_rgb(12, 17, 22);
-const PANEL: Color32 = Color32::from_rgb(16, 24, 31);
 
 enum Command {
     Call(&'static str, serde_json::Value),
@@ -179,30 +174,7 @@ impl App {
             .iter()
             .map(|t| (t.clone(), feeds[t].query(&query, t)))
             .collect();
-        let mut style = (*ctx.style()).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.override_text_color = Some(INK);
-        style.visuals.panel_fill = PAPER;
-        style.visuals.window_fill = PANEL;
-        style.visuals.hyperlink_color = BLUE;
-        style.visuals.code_bg_color = Color32::from_rgb(10, 20, 28);
-        style.visuals.selection.bg_fill = Color32::from_rgb(34, 59, 73);
-        style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, BLUE);
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(28, 43, 54);
-        style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(28, 43, 54);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 61, 72);
-        style.spacing.item_spacing = Vec2::new(9., 8.);
-        style.spacing.button_padding = Vec2::new(11., 6.);
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::monospace(14.));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::monospace(13.));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::monospace(23.));
-        ctx.set_style(style);
+        theme::install(ctx);
         let hotkey = register_summon(ctx)
             .map_err(|e| eprintln!("Quick summon unavailable: {e:#}"))
             .ok();
@@ -282,6 +254,14 @@ impl App {
     }
     fn open_feed(&mut self, target: FeedTarget) {
         self.columns.open(target.clone());
+        self.visit_feed(target);
+    }
+    fn focus_sidebar_session(&mut self, id: &str) {
+        let target = FeedTarget::Session(id.to_owned());
+        self.columns.open_first(target.clone());
+        self.visit_feed(target);
+    }
+    fn visit_feed(&mut self, target: FeedTarget) {
         self.reveal_column = Some(target.clone());
         if let FeedTarget::Session(id) = &target {
             let feed = self.feeds.entry(target.clone()).or_default();
@@ -523,18 +503,22 @@ impl App {
         });
     }
     fn header(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         egui::TopBottomPanel::top("header")
             .frame(
                 egui::Frame::new()
-                    .fill(PANEL)
+                    .fill(colors.panel)
                     .inner_margin(egui::Margin::symmetric(14, 7))
-                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, colors.line)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().button_padding = egui::vec2(8., 3.);
                     ui.menu_button(
-                        RichText::new("feedr").size(22.).strong().color(BLUE),
+                        RichText::new("feedr")
+                            .size(22.)
+                            .strong()
+                            .color(colors.accent),
                         |ui| {
                             if ui.button("Agent setup…").clicked() {
                                 self.show_help = true;
@@ -593,9 +577,9 @@ impl App {
                                     "Standalone".into()
                                 })
                                 .color(if connected > 0 {
-                                    Color32::from_rgb(126, 190, 140)
+                                    colors.success
                                 } else {
-                                    MUTED
+                                    colors.muted
                                 }),
                             )
                             .clicked()
@@ -607,17 +591,26 @@ impl App {
             });
     }
     fn sidebar(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         let active_session = self.active_session().map(str::to_owned);
         egui::SidePanel::left("sessions")
             .exact_width(224.)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin {
-                left: 10,
-                right: 10,
-                top: 12,
-                bottom: 12,
-            }))
+            .frame(
+                egui::Frame::new()
+                    .fill(colors.panel)
+                    .inner_margin(egui::Margin {
+                        left: 10,
+                        right: 10,
+                        top: 12,
+                        bottom: 12,
+                    }),
+            )
             .show(ctx, |ui| {
-                ui.label(RichText::new("Agent sessions").color(MUTED).size(12.));
+                ui.label(
+                    RichText::new("Agent sessions")
+                        .color(colors.muted)
+                        .size(12.),
+                );
                 ui.add_space(4.);
                 let previous_view = self.session_view;
                 ui.horizontal(|ui| {
@@ -670,7 +663,7 @@ impl App {
                                     ui.label(
                                         RichText::new(session_list::group_label(session))
                                             .size(11.)
-                                            .color(MUTED),
+                                            .color(colors.muted),
                                     );
                                 }
                                 previous_group = Some(group);
@@ -684,6 +677,13 @@ impl App {
                                     session_color::resolve(&session.id, &self.session_colors);
                                 let response =
                                     session_list::row(ui, session, color, highlighted, now());
+                                #[cfg(test)]
+                                ctx.data_mut(|data| {
+                                    data.insert_temp(
+                                        egui::Id::new(("session-row-rect", &session.id)),
+                                        response.rect,
+                                    )
+                                });
                                 if self.reveal_session.as_deref() == Some(&session.id) {
                                     response.scroll_to_me(Some(egui::Align::Center));
                                     self.reveal_session = None;
@@ -694,13 +694,17 @@ impl App {
                                         ui.close();
                                     }
                                     ui.separator();
-                                    ui.label(RichText::new("Session color").color(MUTED).size(12.));
+                                    ui.label(
+                                        RichText::new("Session color")
+                                            .color(colors.muted)
+                                            .size(12.),
+                                    );
                                     for choice in session_color::PALETTE {
                                         if ui
                                             .selectable_label(
                                                 color.id == choice.id,
                                                 RichText::new(format!("●  {}", choice.name))
-                                                    .color(choice.accent),
+                                                    .color(choice.swatch(ctx.theme()).accent),
                                             )
                                             .clicked()
                                         {
@@ -734,7 +738,7 @@ impl App {
                                             egui::Label::new(
                                                 RichText::new(&session.context.cwd)
                                                     .small()
-                                                    .color(MUTED),
+                                                    .color(colors.muted),
                                             )
                                             .wrap(),
                                         );
@@ -756,12 +760,12 @@ impl App {
                                                 "No activity timestamp observed yet".into()
                                             })
                                             .small()
-                                            .color(MUTED),
+                                            .color(colors.muted),
                                         );
                                     })
                                     .clicked()
                                 {
-                                    self.open_feed(FeedTarget::Session(session.id.clone()));
+                                    self.focus_sidebar_session(&session.id);
                                 }
                             });
                         }
@@ -806,8 +810,9 @@ impl App {
         .on_hover_text("Add feed column");
     }
     fn feed(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PAPER).inner_margin(8))
+            .frame(egui::Frame::new().fill(colors.paper).inner_margin(8))
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for kind in std::iter::once("All").chain(type_filters::TYPES) {
@@ -824,7 +829,24 @@ impl App {
                             self.send_query();
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // The right-aligned controls form one group. Move it to
+                    // the next row before it can overlap the last type filter.
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let labels_width: f32 = ui.fonts_mut(|fonts| {
+                        ["Newest left", "View", "+"]
+                            .into_iter()
+                            .map(|label| fonts.layout_no_wrap(label.into(), font.clone(), colors.ink).size().x)
+                            .sum()
+                    });
+                    let controls_width = labels_width
+                        + 6. * ui.spacing().button_padding.x
+                        + 2. * ui.spacing().item_spacing.x;
+                    if ui.available_size_before_wrap().x < controls_width {
+                        ui.end_row();
+                    }
+                    let controls = egui::Layout::right_to_left(egui::Align::Center)
+                        .with_main_wrap(true);
+                    ui.with_layout(controls, |ui| {
                         self.add_feed_button(ui);
                         ui.menu_button("View", |ui| {
                             let mut show = !self.query.available_only;
@@ -834,18 +856,18 @@ impl App {
                             }
                         });
                         let toggle = ui.selectable_label(self.columns.newest_first, "Newest left")
-                            .on_hover_text("Keep the most recently active session on the left and All sessions on the right. Turn off to restore your manual order; dragging a tab also returns to manual ordering.");
+                            .on_hover_text("Order columns by recent activity, keeping the session selected from the sidebar first. Turn this off to restore your manual order.");
                         #[cfg(test)]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("newest-columns-toggle"), toggle.rect));
                         if toggle.clicked() {
-                            self.columns.newest_first = !self.columns.newest_first;
+                            self.columns.toggle_newest_first();
                             self.reveal_column = self.columns.display_order(&self.snapshot.sessions).first().cloned();
                         }
                     });
                 });
                 if let Some(error) = self.error.clone().or_else(|| self.feed_error.clone()) {
                     ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(Color32::from_rgb(235, 142, 145), error);
+                        ui.colored_label(colors.error, error);
                         if ui.small_button("Dismiss").clicked() {
                             self.error = None;
                             self.feed_error = None;
@@ -882,12 +904,19 @@ impl App {
                     / order.len() as f32)
                     .max(340.);
                 let height = ui.available_height() - 14.;
-                let mut scroll = egui::ScrollArea::horizontal()
+                let reveal_first = self.reveal_column.is_some()
+                    && self.reveal_column.as_ref() == order.first();
+                if follow_latest || reveal_first {
+                    // Reset any pending horizontal animation or momentum as well as the offset.
+                    let id = ui.make_persistent_id(egui::Id::new("feed_columns_scroll"));
+                    egui::scroll_area::State::default().store(ctx, id);
+                }
+                if reveal_first {
+                    self.reveal_column = None;
+                }
+                let scroll = egui::ScrollArea::horizontal()
                     .id_salt("feed_columns_scroll")
                     .auto_shrink([false, false]);
-                if follow_latest {
-                    scroll = scroll.horizontal_scroll_offset(0.);
-                }
                 let _columns_scroll = scroll.show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = gap;
                         ui.horizontal_top(|ui| {
@@ -940,6 +969,7 @@ impl App {
         width: f32,
         height: f32,
     ) -> (egui::Rect, bool) {
+        let colors = Palette::get(ui.ctx());
         let mut closed = false;
         let column = ui.allocate_ui_with_layout(
             egui::vec2(width, height),
@@ -947,9 +977,9 @@ impl App {
             |ui| {
                 let color = target
                     .session_id()
-                    .map(|id| session_color::resolve(id, &self.session_colors));
-                let accent = color.map_or(MUTED, |c| c.accent);
-                let background = color.map_or(PANEL, |c| c.background);
+                    .map(|id| session_color::resolve(id, &self.session_colors).swatch(ui.ctx().theme()));
+                let accent = color.map_or(colors.muted, |c| c.accent);
+                let background = color.map_or(colors.panel, |c| c.background);
                 let active = self.columns.active.as_ref() == Some(target);
                 let (total, unread) = self
                     .feeds
@@ -1038,7 +1068,7 @@ impl App {
                                     if handle.clicked() {
                                         self.columns.active = Some(target.clone());
                                     }
-                                    ui.label(RichText::new(count).size(11.).color(MUTED))
+                                    ui.label(RichText::new(count).size(11.).color(colors.muted))
                                         .on_hover_text(format!("{total} posts / {unread} unread"));
                                     if ui
                                         .add_sized([25., 22.], egui::Button::new("×").frame(false))
@@ -1128,6 +1158,7 @@ impl App {
         (column.inner, closed)
     }
     fn card(&mut self, ui: &mut egui::Ui, p: &Post, target: &FeedTarget) {
+        let colors = Palette::get(ui.ctx());
         for (index, resource) in p.resources.iter().enumerate() {
             if !self.query.matches_type(resource.file_type()) {
                 continue;
@@ -1136,9 +1167,14 @@ impl App {
                 let fresh = target
                     .session_id()
                     .is_some_and(|id| self.session_updates.highlighted(id, p, &resource.target));
-                let color = session_color::resolve(&p.session_id, &self.session_colors);
+                let color = session_color::resolve(&p.session_id, &self.session_colors)
+                    .swatch(ui.ctx().theme());
                 let row = egui::Frame::new()
-                    .fill(if fresh { color.highlighted() } else { PANEL })
+                    .fill(if fresh {
+                        color.highlighted()
+                    } else {
+                        colors.panel
+                    })
                     .stroke(if fresh {
                         egui::Stroke::new(1.0_f32, color.accent)
                     } else {
@@ -1172,10 +1208,10 @@ impl App {
                                 self.columns.active = Some(target.clone());
                             }
                             response.context_menu(|ui| self.resource_menu(ui, p, index));
-                            let menu = ui
-                                .menu_button(RichText::new("···").size(11.).color(MUTED), |ui| {
-                                    self.resource_menu(ui, p, index)
-                                });
+                            let menu = ui.menu_button(
+                                RichText::new("···").size(11.).color(colors.muted),
+                                |ui| self.resource_menu(ui, p, index),
+                            );
                             menu.response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
                                     egui::WidgetType::Button,
@@ -1200,6 +1236,7 @@ impl App {
         }
     }
     fn resource_menu(&mut self, ui: &mut egui::Ui, post: &Post, index: usize) {
+        let colors = Palette::get(ui.ctx());
         let resource = &post.resources[index];
         ui.label(RichText::new(&post.title).size(12.).strong());
         if post.resources.len() > 1 {
@@ -1210,7 +1247,7 @@ impl App {
                     post.resources.len()
                 ))
                 .size(11.)
-                .color(MUTED),
+                .color(colors.muted),
             );
         }
         ui.separator();
@@ -1303,6 +1340,7 @@ impl App {
         ));
     }
     fn discovery_settings(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         if !self.show_discovery {
             return;
         }
@@ -1331,7 +1369,7 @@ impl App {
                 }
             });
             ui.add_space(8.);
-            ui.label(RichText::new("Kept and pinned items stay visible. Other mentions of excluded types are hidden until re-enabled.").color(MUTED).size(12.));
+            ui.label(RichText::new("Kept and pinned items stay visible. Other mentions of excluded types are hidden until re-enabled.").color(colors.muted).size(12.));
             if config.file_types.is_empty() {ui.label("Select a file type to discover mentions.");}
             ui.separator();
             let mut remove = None;
@@ -1342,7 +1380,7 @@ impl App {
                 ui.label("Add log sources with feedr discovery watch-log, or send completed messages with feedr discovery ingest.");
             });
             if let Some(index) = remove { config.logs.remove(index); }
-            if let Some(error) = &self.snapshot.discovery_error { ui.separator(); ui.colored_label(MUTED, error); }
+            if let Some(error) = &self.snapshot.discovery_error { ui.separator(); ui.colored_label(colors.error, error); }
             if config != original {self.configure_discovery(config);}
         });
         self.show_discovery = open;
@@ -1398,6 +1436,7 @@ impl App {
         native_media
     }
     fn expanded_viewer(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         let Some(post) = self
             .selected
             .as_ref()
@@ -1413,9 +1452,9 @@ impl App {
         egui::TopBottomPanel::top("expanded-preview-toolbar")
             .frame(
                 egui::Frame::new()
-                    .fill(PANEL)
+                    .fill(colors.panel)
                     .inner_margin(egui::Margin::symmetric(12, 6))
-                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, colors.line)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1431,7 +1470,7 @@ impl App {
                 });
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PAPER).inner_margin(12))
+            .frame(egui::Frame::new().fill(colors.paper).inner_margin(12))
             .show(ctx, |ui| {
                 if native_media {
                     if let Some(viewer) = &mut self.media
@@ -1460,7 +1499,7 @@ impl App {
                             }
                         }
                         Some(Preview::Error(message)) | Some(Preview::Unsupported(message)) => {
-                            ui.colored_label(MUTED, message);
+                            ui.colored_label(colors.muted, message);
                         }
                         _ => {
                             ui.spinner();
@@ -1471,6 +1510,7 @@ impl App {
             });
     }
     fn detail(&mut self, ctx: &egui::Context) {
+        let colors = Palette::get(ctx);
         let Some(p) = self
             .selected
             .as_ref()
@@ -1490,16 +1530,18 @@ impl App {
             .resizable(true)
             .frame(
                 egui::Frame::new()
-                    .fill(PANEL)
+                    .fill(colors.panel)
                     .inner_margin(12)
-                    .stroke(egui::Stroke::new(1.0_f32, LINE)),
+                    .stroke(egui::Stroke::new(1.0_f32, colors.line)),
             )
             .show(ctx, |ui| {
                 let actions = viewer_header::Header {
                     post: &p,
                     resource: &r,
                     index: self.resource,
-                    accent: session_color::resolve(&p.session_id, &self.session_colors).accent,
+                    accent: session_color::resolve(&p.session_id, &self.session_colors)
+                        .swatch(ctx.theme())
+                        .accent,
                     render_markdown: &mut self.render_markdown,
                     source: match &self.preview {
                         Some(Preview::Text(text)) => Some(text),
@@ -1580,7 +1622,7 @@ impl App {
                         }
                         Some(Preview::Error(message)) => {
                             ui.add_space(22.);
-                            ui.colored_label(Color32::from_rgb(235, 142, 145), message);
+                            ui.colored_label(colors.error, message);
                         }
                     });
             });
@@ -1889,6 +1931,7 @@ fn line_action(
     inset: f32,
     sense: egui::Sense,
 ) -> egui::Response {
+    let colors = Palette::get(ui.ctx());
     let text: egui::WidgetText = text.into();
     let label = text.text().to_owned();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width.max(0.), height), sense);
@@ -1901,7 +1944,15 @@ fn line_action(
     let position = egui::pos2(rect.left() + inset, rect.center().y - galley.size().y / 2.);
     ui.painter()
         .with_clip_rect(rect.intersect(ui.clip_rect()))
-        .galley(position, galley, INK);
+        .galley(position, galley, colors.ink);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            3.,
+            egui::Stroke::new(1.0_f32, colors.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
     });
@@ -2055,7 +2106,7 @@ mod tests {
         app.select_resource(&post, 1);
         let resource = &post.resources[1];
         let ctx = egui::Context::default();
-        let image = egui::ColorImage::filled([64, 32], BLUE);
+        let image = egui::ColorImage::filled([64, 32], Palette::get(&ctx).accent);
         app.texture =
             Some(ctx.load_texture("test-image", image.clone(), egui::TextureOptions::LINEAR));
         let texture_id = app.texture.as_ref().unwrap().id();
@@ -2505,8 +2556,10 @@ mod tests {
         });
         app.session_updates
             .open("session", None, std::slice::from_ref(&p), 20);
-        let color = session_color::resolve("session", &app.session_colors).highlighted();
         let ctx = egui::Context::default();
+        let color = session_color::resolve("session", &app.session_colors)
+            .swatch(ctx.theme())
+            .highlighted();
         for (target, expected) in [
             (FeedTarget::Session("session".into()), 1),
             (FeedTarget::All, 0),
@@ -2652,12 +2705,130 @@ mod tests {
     }
 
     #[test]
-    fn newest_left_control_is_visible_in_narrow_and_wide_feeds() {
-        for width in [360., 1100.] {
+    fn clicking_sidebar_sessions_moves_their_columns_into_view_on_the_far_left() {
+        for newest_first in [false, true] {
             let mut app = app();
+            let ids: Vec<_> = (0..13).map(|index| format!("session-{index}")).collect();
+            app.snapshot.sessions = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    serde_json::from_value(json!({
+                        "id": id, "context": {"label": id, "agent": "Codex"},
+                        "status": "idle", "online": true, "terminal_id": id,
+                        "pane_order": index, "last_activity_at": index
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            for id in &ids[..12] {
+                app.open_feed(FeedTarget::Session(id.clone()));
+            }
+            app.reveal_column = None;
+            app.columns.newest_first = newest_first;
             let ctx = egui::Context::default();
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.));
-            for _ in 0..2 {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 800.));
+            let frame = |app: &mut App, events| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        app.sidebar(ctx);
+                        app.feed(ctx);
+                    },
+                );
+            };
+            let rect = |id| ctx.data(|data| data.get_temp::<egui::Rect>(id).unwrap());
+            let scroll_state = || {
+                ctx.data(|data| {
+                    data.get_temp::<(egui::Id, f32)>(egui::Id::new("feed-columns-scroll-state"))
+                        .unwrap()
+                })
+            };
+            frame(&mut app, vec![]);
+            let (scroll_id, _) = scroll_state();
+
+            for index in [4, 12, 12] {
+                let id = &ids[index];
+                let target = FeedTarget::Session(id.clone());
+                let mut expected = app.columns.order.clone();
+                if newest_first {
+                    if !expected.contains(&target) {
+                        expected.push(target.clone());
+                    }
+                } else {
+                    expected.retain(|column| *column != target);
+                    expected.insert(0, target.clone());
+                }
+
+                let mut scroll = egui::scroll_area::State::load(&ctx, scroll_id).unwrap();
+                scroll.offset.x = 950.;
+                scroll.store(&ctx, scroll_id);
+                frame(&mut app, vec![]);
+                assert_eq!(scroll_state().1, 950.);
+                let header_id = egui::Id::new(("feed-column-rect", &target));
+                if index == 4 {
+                    assert!(rect(header_id).left() > screen.right());
+                }
+
+                let sidebar_row = rect(egui::Id::new(("session-row-rect", id)));
+                let pos = sidebar_row.center();
+                for pressed in [true, false] {
+                    frame(
+                        &mut app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                assert_eq!(app.columns.order, expected);
+                assert_eq!(app.displayed_columns.first(), Some(&target));
+                assert_eq!(app.displayed_columns.len(), expected.len());
+                assert!(
+                    expected
+                        .iter()
+                        .all(|column| app.displayed_columns.contains(column))
+                );
+                assert_eq!(app.columns.active.as_ref(), Some(&target));
+                assert_eq!(scroll_state().1, 0.);
+                let header = rect(header_id);
+                assert!(screen.contains_rect(header));
+                assert!((sidebar_row.right()..sidebar_row.right() + 40.).contains(&header.left()));
+
+                app.snapshot.sessions[3].last_activity_at = Some(100);
+                frame(&mut app, vec![]);
+                assert_eq!(app.displayed_columns.first(), Some(&target));
+                assert_eq!(scroll_state().1, 0.);
+                if newest_first {
+                    assert_eq!(
+                        app.displayed_columns[1],
+                        FeedTarget::Session(ids[3].clone())
+                    );
+                }
+            }
+            assert_eq!(app.columns.newest_first, newest_first);
+        }
+    }
+
+    #[test]
+    fn feed_toolbar_controls_never_overlap_type_filters() {
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            ctx.set_theme(theme);
+            for width in (140..=860).step_by(20).chain([1100]) {
+                let mut app = app();
+                let screen =
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, 800.));
                 let _ = ctx.run(
                     egui::RawInput {
                         screen_rect: Some(screen),
@@ -2665,15 +2836,22 @@ mod tests {
                     },
                     |ctx| app.feed(ctx),
                 );
+                ctx.data(|data| {
+                    let toggle = data
+                        .get_temp::<egui::Rect>(egui::Id::new("newest-columns-toggle"))
+                        .unwrap();
+                    assert!(screen.contains_rect(toggle), "{theme:?}, width={width}");
+                    for kind in std::iter::once("All").chain(type_filters::TYPES) {
+                        let filter = data
+                            .get_temp::<egui::Rect>(egui::Id::new(("resource-type-filter", kind)))
+                            .unwrap();
+                        assert!(
+                            !filter.intersects(toggle),
+                            "{theme:?}, width={width}, filter={kind}"
+                        );
+                    }
+                });
             }
-            let toggle = ctx.data(|d| {
-                d.get_temp::<egui::Rect>(egui::Id::new("newest-columns-toggle"))
-                    .unwrap()
-            });
-            assert!(
-                screen.contains_rect(toggle),
-                "width={width}, toggle={toggle:?}"
-            );
         }
     }
 
