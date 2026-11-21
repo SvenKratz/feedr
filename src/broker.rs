@@ -1,4 +1,8 @@
-use crate::{herdr, model::*, store::Store};
+use crate::{
+    herdr,
+    model::*,
+    store::{Store, desktop},
+};
 use anyhow::{Context as _, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -6,7 +10,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
@@ -57,7 +61,9 @@ impl Paths {
 pub struct State {
     pub store: Store,
     pub connections: HashMap<String, ConnectionStatus>,
+    pub(crate) herdr_focus: Option<herdr::Focus>,
     pub discovery_error: Option<String>,
+    pub(crate) desktop: desktop::Cache,
 }
 pub type Shared = Arc<(Mutex<State>, Condvar)>;
 
@@ -69,11 +75,10 @@ struct Request {
     params: Value,
 }
 #[derive(Serialize, Deserialize)]
-struct Reply {
+struct Reply<T> {
     version: u32,
     ok: bool,
-    #[serde(default)]
-    result: Value,
+    result: Option<T>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -108,11 +113,16 @@ pub fn serve(paths: Paths) -> Result<()> {
     }
     let listener = UnixListener::bind(&paths.socket)?;
     fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))?;
+    let path = paths.root.join("feedr.sqlite3");
+    let mut store = Store::open(&path)?;
+    store.prune_expired(now())?;
     let state = Arc::new((
         Mutex::new(State {
-            store: Store::open(&paths.root.join("feedr.sqlite3"))?,
+            store,
             connections: HashMap::new(),
+            herdr_focus: None,
             discovery_error: None,
+            desktop: desktop::Cache::default(),
         }),
         Condvar::new(),
     ));
@@ -121,6 +131,8 @@ pub fn serve(paths: Paths) -> Result<()> {
     crate::telemetry::start(&paths.root, false);
     let clients = Arc::new(AtomicUsize::new(0));
     let stopping = Arc::new(AtomicBool::new(false));
+    desktop::start(state.clone(), path, stopping.clone());
+    schedule_retention(state.clone(), stopping.clone());
     eprintln!("Feedr broker listening on {}", paths.socket.display());
     for stream in listener.incoming() {
         if stopping.load(Ordering::Acquire) {
@@ -142,9 +154,10 @@ pub fn serve(paths: Paths) -> Result<()> {
         let stopping = stopping.clone();
         let wake_socket = paths.socket.clone();
         thread::spawn(move || {
-            match handle(stream, state) {
+            match handle(stream, &state) {
                 Ok(true) => {
                     stopping.store(true, Ordering::Release);
+                    state.1.notify_all();
                     // Wake blocking accept without adding an idle polling timer.
                     let _ = UnixStream::connect(wake_socket);
                 }
@@ -162,19 +175,36 @@ pub fn serve(paths: Paths) -> Result<()> {
     crate::telemetry::persist();
     Ok(())
 }
-fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
+fn handle(mut stream: UnixStream, shared: &Shared) -> Result<bool> {
     stream.set_read_timeout(Some(Duration::from_secs(8)))?;
     stream.set_write_timeout(Some(Duration::from_secs(8)))?;
-    let mut shutdown = false;
-    let result = (|| -> Result<Value> {
+    let decoded = (|| -> Result<Request> {
         let request: Request = serde_json::from_str(&bounded_line(stream.try_clone()?)?)?;
         ensure!(request.version == 1, "Unsupported Feedr protocol version");
+        Ok(request)
+    })();
+    let request = match decoded {
+        Ok(request) => request,
+        Err(error) => {
+            write_reply::<Value>(&mut stream, Err(error))?;
+            return Ok(false);
+        }
+    };
+    if request.method == "desktop.snapshot" {
+        let result = serde_json::from_value(request.params)
+            .map_err(Into::into)
+            .and_then(|query| desktop_snapshot(shared, query));
+        write_reply(&mut stream, result)?;
+        return Ok(false);
+    }
+    let mut shutdown = false;
+    let result = (|| -> Result<Value> {
         if request.method == "post"
             && request.params["session_id"].is_null()
             && let Some(socket) = request.params["context"]["herdr_socket"].as_str()
             && request.params["context"]["pane_id"].is_string()
         {
-            herdr::refresh(&shared, Path::new(socket))
+            herdr::refresh(shared, Path::new(socket))
                 .context("Cannot bind the producing herdr pane")?;
         }
         let mut state = shared
@@ -187,14 +217,21 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
                 .as_u64()
                 .unwrap_or(1000)
                 .min(4000);
+            let desktop_after = request.params["desktop_after"].as_u64();
             let (guard, _) = shared
                 .1
                 .wait_timeout_while(state, Duration::from_millis(timeout), |s| {
-                    s.store.sequence().unwrap_or(-1) <= after
+                    let sequence = s.store.sequence().unwrap_or(-1);
+                    match desktop_after {
+                        Some(generation) => sequence == after && s.desktop.generation == generation,
+                        None => sequence <= after,
+                    }
                 })
                 .map_err(|_| anyhow::anyhow!("Broker wait failed"))?;
             state = guard;
-            return Ok(json!({"sequence":state.store.sequence()?}));
+            return Ok(
+                json!({"sequence":state.store.sequence()?, "desktop_generation":state.desktop.generation}),
+            );
         }
         let result = match request.method.as_str() {
             "shutdown" => {
@@ -202,6 +239,14 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
                 json!({"stopping":true})
             }
             "discovery.config" => serde_json::to_value(state.store.discovery_config()?)?,
+            "retention.set" => {
+                let policy = serde_json::from_value(request.params)?;
+                let deleted = state.store.set_retention(policy, now())?;
+                if deleted > 0 {
+                    state.desktop.index = None;
+                }
+                json!({"retention":policy,"deleted":deleted})
+            }
             "discovery.configure" => {
                 let config = serde_json::from_value(request.params)?;
                 state.store.set_discovery_config(&config)?;
@@ -248,9 +293,7 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
                 let mut s = state
                     .store
                     .snapshot(&serde_json::from_value(request.params)?)?;
-                s.connections = state.connections.values().cloned().collect();
-                s.discovery_error = state.discovery_error.clone();
-                s.connections.sort_by(|a, b| a.socket.cmp(&b.socket));
+                session_status(&state, &mut s);
                 serde_json::to_value(s)?
             }
             "sessions" => serde_json::to_value(state.store.sessions()?)?,
@@ -260,23 +303,104 @@ fn handle(mut stream: UnixStream, shared: Shared) -> Result<bool> {
         shared.1.notify_all();
         Ok(result)
     })();
+    write_reply(&mut stream, result)?;
+    Ok(shutdown)
+}
+
+fn session_status(state: &State, snapshot: &mut Snapshot) {
+    snapshot.connections = state.connections.values().cloned().collect();
+    snapshot.connections.sort_by(|a, b| a.socket.cmp(&b.socket));
+    snapshot.discovery_error = state.discovery_error.clone();
+    snapshot.herdr_focused_session = state
+        .herdr_focus
+        .as_ref()
+        .and_then(|focus| focus.session_id(&snapshot.sessions))
+        .map(str::to_owned);
+}
+
+fn desktop_snapshot(shared: &Shared, query: desktop::BatchQuery) -> Result<desktop::Batch> {
+    ensure!(
+        query.columns.len() <= desktop::MAX_COLUMNS,
+        "Feed batch exceeds column limit"
+    );
+    let mut state = shared
+        .0
+        .lock()
+        .map_err(|_| anyhow::anyhow!("State lock failed"))?;
+    let mut snapshot = state
+        .store
+        .snapshot_metadata(state.store.discovery_config()?)?;
+    if query.columns.is_empty() {
+        session_status(&state, &mut snapshot);
+        return Ok(desktop::Batch {
+            snapshot,
+            generation: state.desktop.generation,
+            pages: Vec::new(),
+        });
+    }
+    state.desktop.requested = Some(Instant::now());
+    if state.desktop.index.is_none() {
+        shared.1.notify_all();
+        (state, _) = shared
+            .1
+            .wait_timeout_while(state, Duration::from_secs(3), |s| s.desktop.index.is_none())
+            .map_err(|_| anyhow::anyhow!("State lock failed"))?;
+        snapshot = state
+            .store
+            .snapshot_metadata(state.store.discovery_config()?)?;
+    }
+    let index = state
+        .desktop
+        .index
+        .clone()
+        .context("Feed index is warming up")?;
+    let generation = state.desktop.generation;
+    session_status(&state, &mut snapshot);
+    drop(state);
+    index.select(snapshot, generation, query)
+}
+
+fn schedule_retention(shared: Shared, stopping: Arc<AtomicBool>) {
+    thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(3600));
+            if stopping.load(Ordering::Relaxed) {
+                return;
+            }
+            let Ok(mut state) = shared.0.lock() else {
+                return;
+            };
+            match state.store.prune_expired(now()) {
+                Ok(0) => (),
+                Ok(_) => {
+                    state.desktop.index = None;
+                    shared.1.notify_all();
+                }
+                Err(error) => eprintln!("Feed retention: {error:#}"),
+            }
+        }
+    });
+}
+
+fn write_reply<T: Serialize>(stream: &mut UnixStream, result: Result<T>) -> Result<()> {
     let reply = match result {
         Ok(result) => Reply {
             version: 1,
             ok: true,
-            result,
+            result: Some(result),
             error: None,
         },
         Err(e) => Reply {
             version: 1,
             ok: false,
-            result: Value::Null,
+            result: None,
             error: Some(format!("{e:#}")),
         },
     };
-    serde_json::to_writer(&mut stream, &reply)?;
-    stream.write_all(b"\n")?;
-    Ok(shutdown)
+    let mut writer = BufWriter::with_capacity(64 * 1024, stream);
+    serde_json::to_writer(&mut writer, &reply)?;
+    writer.write_all(b"\n")?;
+    writer.flush().map_err(Into::into)
 }
 
 #[derive(Clone)]
@@ -309,7 +433,7 @@ impl Client {
         ensure!((bytes.len() as u64) < MAX_MESSAGE, "Request exceeds 1 MiB");
         stream.write_all(&bytes)?;
         stream.write_all(b"\n")?;
-        let reply: Reply = serde_json::from_str(&bounded_line_limit(stream, 64 * 1024 * 1024)?)?;
+        let reply: Reply<T> = serde_json::from_str(&bounded_line_limit(stream, 64 * 1024 * 1024)?)?;
         ensure!(reply.version == 1, "Incompatible broker protocol");
         if !reply.ok {
             bail!(
@@ -319,7 +443,10 @@ impl Client {
                     .unwrap_or_else(|| "Broker request failed".into())
             );
         }
-        Ok(serde_json::from_value(reply.result)?)
+        match reply.result {
+            Some(result) => Ok(result),
+            None => Ok(serde_json::from_value(Value::Null)?),
+        }
     }
     pub fn ensure_running(&self) -> Result<()> {
         let _update_guard = installation_lock(&self.paths, false)?;

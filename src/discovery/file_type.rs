@@ -55,7 +55,7 @@ impl FileType {
             Self::Video => "Video",
             Self::Audio => "Audio",
             Self::Pdf => "PDF",
-            Self::Web => "Web links",
+            Self::Web => "HTML",
             Self::Folder => "Folders",
             Self::App => "Apps",
             Self::Other => "Other files",
@@ -65,14 +65,14 @@ impl FileType {
         match self {
             Self::Text => "Plain text, logs, CSV, reStructuredText and Org files",
             Self::Code => {
-                "Source code, scripts, HTML/CSS, JSON, YAML, TOML and other configuration files"
+                "Source code, scripts, CSS, JSON, YAML, TOML and other configuration files"
             }
             Self::Markdown => "Markdown documents, including .md, .markdown, .mdx and .rmd",
             Self::Image => "Images, including PNG, JPEG, GIF, SVG, TIFF and WebP",
             Self::Video => "Video files, including MP4, MOV, MKV, WebM and AVI",
             Self::Audio => "Audio files, including MP3, WAV, FLAC, M4A, Ogg and Opus",
             Self::Pdf => "PDF documents",
-            Self::Web => "HTTP and HTTPS links, regardless of the URL's extension",
+            Self::Web => "Local .html and .htm files and HTTP(S) links",
             Self::Folder => "Directories and mounted volumes",
             Self::App => "Application bundles and app references",
             Self::Other => "Files whose type is not in another category",
@@ -128,14 +128,15 @@ impl FileType {
             "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "aif" | "aiff"
             | "alac" | "wma" => Self::Audio,
             "pdf" => Self::Pdf,
+            "html" | "htm" => Self::Web,
             "rs" | "py" | "pyi" | "ipynb" | "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "go"
             | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "cs" | "java" | "kt" | "kts" | "swift"
             | "m" | "mm" | "rb" | "php" | "pl" | "pm" | "r" | "jl" | "lua" | "sh" | "bash"
-            | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "sql" | "html" | "htm" | "css" | "scss"
-            | "sass" | "less" | "vue" | "svelte" | "ex" | "exs" | "erl" | "hs" | "clj" | "cljs"
-            | "cljc" | "edn" | "dart" | "zig" | "nix" | "json" | "jsonl" | "yaml" | "yml"
-            | "toml" | "xml" | "ini" | "cfg" | "conf" | "env" | "lock" | "proto" | "graphql"
-            | "tf" | "hcl" | "cmake" | "wasm" => Self::Code,
+            | "zsh" | "fish" | "ps1" | "bat" | "cmd" | "sql" | "css" | "scss" | "sass" | "less"
+            | "vue" | "svelte" | "ex" | "exs" | "erl" | "hs" | "clj" | "cljs" | "cljc" | "edn"
+            | "dart" | "zig" | "nix" | "json" | "jsonl" | "yaml" | "yml" | "toml" | "xml"
+            | "ini" | "cfg" | "conf" | "env" | "lock" | "proto" | "graphql" | "tf" | "hcl"
+            | "cmake" | "wasm" => Self::Code,
             _ => Self::Other,
         }
     }

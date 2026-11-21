@@ -1,6 +1,7 @@
-//! Herdr events invalidate our cache. They are never replayed over snapshots.
+//! Herdr lifecycle events invalidate our session cache. With Herdr 0.9.1 and
+//! later, live focus events can also identify the most recent client's pane.
 use crate::{
-    broker::{Shared, bounded_line},
+    broker::{Shared, State, bounded_line},
     model::*,
 };
 use anyhow::{Context as _, Result, ensure};
@@ -14,6 +15,45 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+#[derive(PartialEq, Eq)]
+pub(crate) struct Focus {
+    socket: String,
+    pane_id: String,
+}
+
+impl Focus {
+    fn new(socket: &str, pane_id: &str) -> Self {
+        Self {
+            socket: socket.into(),
+            pane_id: pane_id.into(),
+        }
+    }
+
+    pub(crate) fn session_id<'a>(&self, sessions: &'a [Session]) -> Option<&'a str> {
+        sessions
+            .iter()
+            .find(|s| {
+                s.online
+                    && s.context.herdr_socket.as_deref() == Some(self.socket.as_str())
+                    && s.context.pane_id.as_deref() == Some(self.pane_id.as_str())
+            })
+            .map(|s| s.id.as_str())
+    }
+}
+
+fn set_focus(state: &mut State, focus: Option<Focus>) -> Result<()> {
+    if state.herdr_focus != focus {
+        state.store.touch()?;
+        state.herdr_focus = focus;
+    }
+    Ok(())
+}
+
+struct FocusWatch {
+    live_events: bool,
+    snapshot_pane: Option<String>,
+}
 
 fn fingerprint(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))[..24].into()
@@ -74,6 +114,13 @@ fn status(shared: &Shared, socket: &str, connected: bool, message: String) {
             let _ = state.store.touch();
         }
         if !connected {
+            if state
+                .herdr_focus
+                .as_ref()
+                .is_some_and(|f| f.socket == socket)
+            {
+                let _ = set_focus(&mut state, None);
+            }
             let _ = state.store.reconcile(socket, vec![]);
         }
     }
@@ -138,6 +185,14 @@ pub(crate) fn pane_text(session: &Session) -> Result<String> {
 }
 
 pub(crate) fn refresh(shared: &Shared, socket: &Path) -> Result<()> {
+    refresh_sessions(shared, socket, None)
+}
+
+fn refresh_sessions(
+    shared: &Shared,
+    socket: &Path,
+    focus_watch: Option<&mut Option<FocusWatch>>,
+) -> Result<()> {
     let reply = request(socket, "session.snapshot")?;
     let snapshot = &reply["result"]["snapshot"];
     ensure!(
@@ -150,6 +205,34 @@ pub(crate) fn refresh(shared: &Shared, socket: &Path) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("State lock failed"))?;
     let sessions = sessions_from_snapshot(&key, snapshot, &state.store.sessions()?);
+    if let Some(focus_watch) = focus_watch {
+        let snapshot_pane = snapshot["focused_pane_id"].as_str().filter(|pane| {
+            sessions
+                .iter()
+                .any(|s| s.context.pane_id.as_deref() == Some(*pane))
+        });
+        let watch = focus_watch.get_or_insert_with(|| FocusWatch {
+            // Before 0.9, subscriptions replay retained focus events. 0.9.1
+            // restored focus notifications from independent client views.
+            live_events: snapshot["version"]
+                .as_str()
+                .and_then(|version| semver::Version::parse(version).ok())
+                .is_some_and(|version| version >= semver::Version::new(0, 9, 1)),
+            snapshot_pane: snapshot_pane.map(str::to_owned),
+        });
+        let own_focus = state
+            .herdr_focus
+            .as_ref()
+            .filter(|focus| focus.socket == key);
+        let default_changed = !watch.live_events && watch.snapshot_pane.as_deref() != snapshot_pane;
+        if state.herdr_focus.is_none()
+            || own_focus.is_some_and(|focus| focus.session_id(&sessions).is_none())
+            || (default_changed && (snapshot_pane.is_some() || own_focus.is_some()))
+        {
+            set_focus(&mut state, snapshot_pane.map(|pane| Focus::new(&key, pane)))?;
+        }
+        watch.snapshot_pane = snapshot_pane.map(str::to_owned);
+    }
     state.store.reconcile(&key, sessions)?;
     drop(state);
     status(
@@ -166,6 +249,7 @@ pub(crate) fn refresh(shared: &Shared, socket: &Path) -> Result<()> {
     Ok(())
 }
 fn subscribed(shared: &Shared, socket: &Path) -> Result<()> {
+    let key = socket.to_string_lossy();
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("Herdr unavailable at {}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_millis(250)))?;
@@ -176,6 +260,7 @@ fn subscribed(shared: &Shared, socket: &Path) -> Result<()> {
         "workspace.closed",
         "pane.created",
         "pane.updated",
+        "pane.focused",
         "pane.closed",
         "pane.exited",
         "pane.agent_detected",
@@ -202,7 +287,8 @@ fn subscribed(shared: &Shared, socket: &Path) -> Result<()> {
         }
     }
     ensure!(acknowledged, "Herdr subscription timed out");
-    refresh(shared, socket)?;
+    let mut focus_watch = None;
+    refresh_sessions(shared, socket, Some(&mut focus_watch))?;
     let mut last = Instant::now();
     let mut dirty = false;
     loop {
@@ -212,12 +298,24 @@ fn subscribed(shared: &Shared, socket: &Path) -> Result<()> {
                 "Herdr subscription lost: {}",
                 event["error"]
             );
+            if focus_watch.as_ref().is_some_and(|watch| watch.live_events)
+                && event["event"] == "pane_focused"
+                && let Some(pane) = event["data"]["pane_id"].as_str()
+            {
+                let mut state = shared
+                    .0
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("State lock failed"))?;
+                set_focus(&mut state, Some(Focus::new(&key, pane)))?;
+                drop(state);
+                shared.1.notify_all();
+            }
             dirty = true;
         }
         if (dirty && last.elapsed() > Duration::from_millis(120))
             || last.elapsed() > Duration::from_secs(2)
         {
-            refresh(shared, socket)?;
+            refresh_sessions(shared, socket, Some(&mut focus_watch))?;
             last = Instant::now();
             dirty = false;
         }
@@ -438,5 +536,145 @@ mod passive_read_tests {
                 .to_string()
                 .contains("Visible snapshots unavailable")
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::store::Store;
+    use std::{
+        os::unix::net::UnixListener,
+        sync::{Arc, Condvar, Mutex, mpsc},
+    };
+
+    #[test]
+    fn subscribed_split_pane_focus_wins_over_the_server_default() {
+        // Newer herdr can report a client whose selection differs from the
+        // server's default. The periodic snapshot must preserve that choice.
+        check_split_focus("0.9.1", &[(1, 0, 1), (0, 0, 0)]);
+    }
+
+    #[test]
+    fn older_herdr_follows_current_focus_without_replaying_old_selections() {
+        check_split_focus("0.8.2", &[(1, 0, 0), (1, 1, 1), (0, 0, 0)]);
+    }
+
+    fn check_split_focus(version: &'static str, steps: &'static [(usize, usize, usize)]) {
+        let dir = tempfile::Builder::new()
+            .prefix("fdr-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = dir.path().join("herdr.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let snapshot = json!({
+            "version": version,
+            "workspaces": [{"workspace_id": "w", "label": "Project"}],
+            "panes": [
+                {"pane_id": "w:p1", "workspace_id": "w", "tab_id": "t", "agent": "codex"},
+                {"pane_id": "w:p2", "workspace_id": "w", "tab_id": "t", "agent": "codex"}
+            ]
+        });
+        let key = socket.to_str().unwrap();
+        let panes = sessions_from_snapshot(key, &snapshot, &[]);
+        assert_ne!(panes[0].id, panes[1].id);
+        let mut store = Store::open(&dir.path().join("db")).unwrap();
+        let other = dir.path().join("other.sock");
+        let other_key = other.to_str().unwrap();
+        store
+            .reconcile(other_key, sessions_from_snapshot(other_key, &snapshot, &[]))
+            .unwrap();
+        let shared = Arc::new((
+            Mutex::new(State {
+                store,
+                connections: HashMap::new(),
+                herdr_focus: None,
+                discovery_error: None,
+                desktop: Default::default(),
+            }),
+            Condvar::new(),
+        ));
+        let (focus_pane, focus_requests) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut events, _) = listener.accept().unwrap();
+            let subscribe: Value =
+                serde_json::from_str(&bounded_line(events.try_clone().unwrap()).unwrap()).unwrap();
+            assert_eq!(subscribe["method"], "events.subscribe");
+            assert!(
+                subscribe["params"]["subscriptions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!({"type":"pane.focused"}))
+            );
+            writeln!(
+                events,
+                "{}",
+                json!({"result":{"type":"subscription_started"}})
+            )
+            .unwrap();
+            let send_snapshot = |protocol, pane| {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request: Value =
+                    serde_json::from_str(&bounded_line(stream.try_clone().unwrap()).unwrap())
+                        .unwrap();
+                assert_eq!(request["method"], "session.snapshot");
+                let mut snapshot = snapshot.clone();
+                snapshot["protocol"] = json!(protocol);
+                snapshot["focused_pane_id"] = snapshot["panes"][pane]["pane_id"].clone();
+                writeln!(stream, "{}", json!({"result":{"snapshot":snapshot}})).unwrap();
+            };
+            send_snapshot(0, 0usize);
+            for (index, &(event_pane, snapshot_pane, _)) in steps.iter().enumerate() {
+                focus_requests.recv_timeout(Duration::from_secs(3)).unwrap();
+                writeln!(
+                    events,
+                    "{}",
+                    json!({"event":"pane_focused","data":{
+                        "pane_id":snapshot["panes"][event_pane]["pane_id"],"workspace_id":"w"
+                    }})
+                )
+                .unwrap();
+                send_snapshot(index + 1, snapshot_pane);
+            }
+            focus_requests.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let watcher = {
+            let shared = shared.clone();
+            let socket = socket.clone();
+            thread::spawn(move || {
+                let error = subscribed(&shared, &socket).unwrap_err();
+                status(&shared, socket.to_str().unwrap(), false, error.to_string());
+            })
+        };
+        let wait_for_focus = |id: &str, after, protocol| {
+            let message = format!("herdr {version} · protocol {protocol}");
+            let (state, timeout) = shared
+                .1
+                .wait_timeout_while(shared.0.lock().unwrap(), Duration::from_secs(3), |state| {
+                    let sessions = state.store.sessions().unwrap();
+                    state.store.sequence().unwrap() <= after
+                        || state
+                            .connections
+                            .get(key)
+                            .is_none_or(|status| status.message != message)
+                        || state
+                            .herdr_focus
+                            .as_ref()
+                            .and_then(|focus| focus.session_id(&sessions))
+                            != Some(id)
+                })
+                .unwrap();
+            assert!(!timeout.timed_out(), "expected focus on {id}");
+            state.store.sequence().unwrap()
+        };
+        let mut sequence = wait_for_focus(&panes[0].id, -1, 0);
+        for (index, &(_, _, expected)) in steps.iter().enumerate() {
+            focus_pane.send(()).unwrap();
+            sequence = wait_for_focus(&panes[expected].id, sequence, index + 1);
+        }
+        focus_pane.send(()).unwrap();
+        server.join().unwrap();
+        watcher.join().unwrap();
+        assert!(shared.0.lock().unwrap().herdr_focus.is_none());
     }
 }

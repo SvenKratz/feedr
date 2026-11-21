@@ -6,6 +6,10 @@ pub(super) const TYPES: [&str; 8] = [
 ];
 const STORAGE_KEY: &str = "feedr.resource_types";
 
+pub(super) fn label(kind: &str) -> &str {
+    if kind == "Web" { "HTML" } else { kind }
+}
+
 pub(super) fn restore(storage: Option<&dyn eframe::Storage>) -> Vec<String> {
     let saved: Vec<String> = storage
         .and_then(|storage| eframe::get_value(storage, STORAGE_KEY))

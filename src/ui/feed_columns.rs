@@ -173,6 +173,7 @@ pub(super) struct Feed {
     pub snapshot: Snapshot,
     pub limit: usize,
     pub reveal_latest: bool,
+    pub filter_pending: bool,
 }
 impl Feed {
     pub fn query(&self, filters: &FeedQuery, target: &Target) -> FeedQuery {

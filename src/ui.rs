@@ -40,9 +40,14 @@ enum Command {
     Query(Vec<(FeedTarget, FeedQuery)>),
     Update(UpdateInput),
     Refresh,
+    Changed(live::Cursor),
 }
 enum Event {
     Snapshot(FeedTarget, FeedQuery, Box<Snapshot>),
+    Batch(
+        Box<crate::store::desktop::Batch>,
+        Vec<(FeedTarget, FeedQuery)>,
+    ),
     Error(String),
     FeedStatus(Option<String>),
 }
@@ -114,6 +119,7 @@ struct App {
     expanded_preview: bool,
     expanded_zoom: f32,
     show_help: bool,
+    retention_draft: Option<Retention>,
     connections: bool,
     show_discovery: bool,
 }
@@ -183,7 +189,10 @@ impl App {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let context = ctx.clone();
-        thread::spawn(move || live::run(client, subscriptions, rx, event_tx, stopping, context));
+        let wake = tx.clone();
+        thread::spawn(move || {
+            live::run(client, subscriptions, wake, rx, event_tx, stopping, context)
+        });
         Self {
             setup,
             updates,
@@ -223,6 +232,7 @@ impl App {
             expanded_preview: false,
             expanded_zoom: 1.,
             show_help: false,
+            retention_draft: None,
             connections: false,
             show_discovery: false,
         }
@@ -242,15 +252,26 @@ impl App {
         let _ = self.commands.send(Command::Query(queries));
     }
     fn send_query(&mut self) {
+        self.clear_selection_for_filter();
+        self.feeds.clear();
+        self.snapshot.posts.clear();
+        self.subscribe_columns();
+    }
+    fn send_type_query(&mut self) {
+        self.clear_selection_for_filter();
+        for feed in self.feeds.values_mut() {
+            feed.limit = 0;
+            feed.filter_pending = true;
+        }
+        self.subscribe_columns();
+    }
+    fn clear_selection_for_filter(&mut self) {
         self.expanded_preview = false;
         self.selected = None;
         self.media = None;
         self.media_key.clear();
         self.reveal_session = None;
         self.reveal_artifact = false;
-        self.feeds.clear();
-        self.snapshot.posts.clear();
-        self.subscribe_columns();
     }
     fn open_feed(&mut self, target: FeedTarget) {
         self.columns.open(target.clone());
@@ -429,46 +450,77 @@ impl App {
     }
     fn receive(&mut self) {
         let mut changed = false;
+        let previous_herdr_focus = self.snapshot.herdr_focused_session.clone();
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::Error(e) => self.error = Some(e),
                 Event::FeedStatus(error) => self.feed_error = error,
                 Event::Snapshot(target, query, snapshot) => {
-                    self.snapshot.sessions = snapshot.sessions.clone();
-                    self.snapshot.connections = snapshot.connections.clone();
-                    self.snapshot.discovery = snapshot.discovery.clone();
-                    self.snapshot.discovery_error = snapshot.discovery_error.clone();
-                    let Some(feed) = self.feeds.get_mut(&target) else {
-                        continue;
-                    };
-                    if query != feed.query(&self.query, &target) {
-                        continue;
+                    self.receive_metadata(&snapshot);
+                    changed |= self.receive_column(target, query, *snapshot);
+                }
+                Event::Batch(batch, queries) => {
+                    self.receive_metadata(&batch.snapshot);
+                    for (target, query, snapshot) in live::expand_batch(*batch, queries) {
+                        changed |= self.receive_column(target, query, snapshot);
                     }
-                    // A sidebar click explicitly reveals the latest batch even
-                    // when an older artifact remains selected in this column.
-                    if let Some(id) = target.session_id() {
-                        self.session_updates.receive(id, &snapshot.posts);
-                    }
-                    let reviewing = target.session_id().is_some_and(|id| {
-                        snapshot.posts.iter().any(|post| {
-                            !feed.snapshot.posts.iter().any(|old| old.id == post.id)
-                                && post.resources.iter().any(|resource| {
-                                    self.session_updates.highlighted(id, post, &resource.target)
-                                })
-                        })
-                    });
-                    if reviewing {
-                        feed.reveal_latest = true;
-                    }
-                    // Selection owns the sidebar, never the freshness of a feed.
-                    feed.snapshot = *snapshot;
-                    changed = true;
                 }
             }
         }
         if changed {
             self.merge_posts();
         }
+        if self.snapshot.herdr_focused_session != previous_herdr_focus
+            && let Some(id) = &self.snapshot.herdr_focused_session
+        {
+            self.reveal_session = Some(id.clone());
+            let target = FeedTarget::Session(id.clone());
+            if self.columns.order.contains(&target) {
+                self.reveal_column = Some(target);
+            }
+        }
+    }
+    fn receive_metadata(&mut self, snapshot: &Snapshot) {
+        self.snapshot.sessions.clone_from(&snapshot.sessions);
+        self.snapshot.connections.clone_from(&snapshot.connections);
+        self.snapshot
+            .herdr_focused_session
+            .clone_from(&snapshot.herdr_focused_session);
+        self.snapshot.discovery.clone_from(&snapshot.discovery);
+        self.snapshot
+            .discovery_error
+            .clone_from(&snapshot.discovery_error);
+        self.snapshot.retention = snapshot.retention;
+    }
+    fn receive_column(&mut self, target: FeedTarget, query: FeedQuery, snapshot: Snapshot) -> bool {
+        let Some(feed) = self.feeds.get_mut(&target) else {
+            return false;
+        };
+        if query != feed.query(&self.query, &target) {
+            return false;
+        }
+        // A sidebar visit can reveal the newest batch even with a preview open.
+        if let Some(id) = target.session_id() {
+            self.session_updates.receive(id, &snapshot.posts);
+        }
+        let reviewing = target.session_id().is_some_and(|id| {
+            let old_ids: HashSet<_> = feed
+                .snapshot
+                .posts
+                .iter()
+                .map(|post| post.id.as_str())
+                .collect();
+            snapshot.posts.iter().any(|post| {
+                !old_ids.contains(post.id.as_str())
+                    && post.resources.iter().any(|resource| {
+                        self.session_updates.highlighted(id, post, &resource.target)
+                    })
+            })
+        });
+        feed.reveal_latest |= reviewing;
+        feed.filter_pending = false;
+        feed.snapshot = snapshot;
+        true
     }
     fn prepare_preview(&mut self, ctx: &egui::Context, p: &Post, r: &Resource) {
         let stamp = artifact::stamp(p, r);
@@ -520,6 +572,10 @@ impl App {
                             .strong()
                             .color(colors.accent),
                         |ui| {
+                            if ui.button("Settings…").clicked() {
+                                self.retention_draft = Some(self.snapshot.retention);
+                                ui.close();
+                            }
                             if ui.button("Agent setup…").clicked() {
                                 self.show_help = true;
                                 ui.close();
@@ -673,10 +729,18 @@ impl App {
                                 let filtered = self.columns.active.as_ref()
                                     == Some(&FeedTarget::Session(session.id.clone()));
                                 let highlighted = active || filtered;
+                                let herdr_focused = self.snapshot.herdr_focused_session.as_deref()
+                                    == Some(session.id.as_str());
                                 let color =
                                     session_color::resolve(&session.id, &self.session_colors);
-                                let response =
-                                    session_list::row(ui, session, color, highlighted, now());
+                                let response = session_list::row(
+                                    ui,
+                                    session,
+                                    color,
+                                    highlighted,
+                                    herdr_focused,
+                                    now(),
+                                );
                                 #[cfg(test)]
                                 ctx.data_mut(|data| {
                                     data.insert_temp(
@@ -747,6 +811,13 @@ impl App {
                                             session_list::status_label(session),
                                             session_list::agent(session)
                                         ));
+                                        if herdr_focused {
+                                            ui.label(
+                                                RichText::new("Focused in herdr")
+                                                    .small()
+                                                    .color(colors.accent),
+                                            );
+                                        }
                                         ui.label(
                                             RichText::new(if session.last_activity_at.is_some() {
                                                 format!(
@@ -817,16 +888,16 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     for kind in std::iter::once("All").chain(type_filters::TYPES) {
                         let selected = type_filters::selected(&self.query, kind);
-                        let response = ui.selectable_label(selected, kind).on_hover_text(if kind == "All" {
-                            "Clear type filters and show all resources"
-                        } else {
-                            "Toggle this type; select several to combine them"
+                        let response = ui.selectable_label(selected, type_filters::label(kind)).on_hover_text(match kind {
+                            "All" => "Clear type filters and show all resources",
+                            "Web" => "Local HTML files and web links",
+                            _ => "Toggle this type; select several to combine them",
                         });
                         #[cfg(test)]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("resource-type-filter", kind)), response.rect));
                         if response.clicked() {
                             type_filters::toggle(&mut self.query, kind);
-                            self.send_query();
+                            self.send_type_query();
                         }
                     }
                     // The right-aligned controls form one group. Move it to
@@ -981,10 +1052,18 @@ impl App {
                 let accent = color.map_or(colors.muted, |c| c.accent);
                 let background = color.map_or(colors.panel, |c| c.background);
                 let active = self.columns.active.as_ref() == Some(target);
-                let (total, unread) = self
+                let herdr_focused = target.session_id().is_some_and(|id| {
+                    self.snapshot.herdr_focused_session.as_deref() == Some(id)
+                });
+                let (header_fill, header_stroke) = if herdr_focused {
+                    (color.map_or(colors.hover, |c| c.highlighted()), colors.accent)
+                } else {
+                    (background, if active { accent } else { background })
+                };
+                let (total, unread, filter_pending) = self
                     .feeds
                     .get(target)
-                    .map(|feed| (feed.snapshot.total, feed.snapshot.unread))
+                    .map(|feed| (feed.snapshot.total, feed.snapshot.unread, feed.filter_pending))
                     .unwrap_or_default();
                 egui::Frame::new()
                     .fill(background)
@@ -995,11 +1074,8 @@ impl App {
                         ui.set_min_height(height);
                         ui.spacing_mut().item_spacing = egui::vec2(4., 2.);
                         let header = egui::Frame::new()
-                            .fill(background)
-                            .stroke(egui::Stroke::new(
-                                1.0_f32,
-                                if active { accent } else { background },
-                            ))
+                            .fill(header_fill)
+                            .stroke(egui::Stroke::new(1.0_f32, header_stroke))
                             .corner_radius(4)
                             .inner_margin(egui::Margin::symmetric(3, 1))
                             .show(ui, |ui| {
@@ -1011,19 +1087,21 @@ impl App {
                                         &self.snapshot.sessions,
                                         ((ui.available_width() - 110.) / 8.).max(12.) as usize,
                                     );
-                                    let count = total.to_string();
+                                    let count = if filter_pending { "…".into() } else { total.to_string() };
                                     let count_width = count.len() as f32 * 7. + 6.;
+                                    let focus_width = if herdr_focused { 12. } else { 0. };
                                     let handle = line_action(
                                         ui,
                                         RichText::new(&compact).color(accent).size(13.),
-                                        ui.available_width() - 34. - count_width,
+                                        ui.available_width() - 34. - count_width - focus_width,
                                         22.,
                                         24.,
                                         egui::Sense::click_and_drag(),
                                     )
                                     .on_hover_cursor(egui::CursorIcon::Grab)
                                     .on_hover_text(format!(
-                                        "{label}\nDrag to rearrange feed columns and use manual ordering"
+                                        "{label}{}\nDrag to rearrange feed columns and use manual ordering",
+                                        if herdr_focused { "\nFocused in herdr" } else { "" }
                                     ));
                                     for x in [8., 12.] {
                                         for y in [-4., 0., 4.] {
@@ -1041,7 +1119,7 @@ impl App {
                                         egui::WidgetInfo::labeled(
                                             egui::WidgetType::Button,
                                             true,
-                                            &label,
+                                            if herdr_focused { format!("{label} · Focused in herdr") } else { label.clone() },
                                         )
                                     });
                                     // Inspect the press event's position, even if a fast native
@@ -1068,8 +1146,15 @@ impl App {
                                     if handle.clicked() {
                                         self.columns.active = Some(target.clone());
                                     }
+                                    if herdr_focused {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(8., 22.), egui::Sense::hover(),
+                                        );
+                                        ui.painter().circle_filled(rect.center(), 2.5, colors.accent);
+                                        response.on_hover_text("Focused in herdr");
+                                    }
                                     ui.label(RichText::new(count).size(11.).color(colors.muted))
-                                        .on_hover_text(format!("{total} posts / {unread} unread"));
+                                        .on_hover_text(if filter_pending { "Updating filter".into() } else { format!("{total} posts / {unread} unread") });
                                     if ui
                                         .add_sized([25., 22.], egui::Button::new("×").frame(false))
                                         .on_hover_text(format!("Close {label} feed column"))
@@ -1124,23 +1209,28 @@ impl App {
                             let Some(feed) = self.feeds.get(target) else {
                                 return;
                             };
-                            let posts = feed.snapshot.posts.clone();
-                            let remaining = feed.snapshot.total.saturating_sub(posts.len());
+                            let remaining = feed.snapshot.total.saturating_sub(feed.snapshot.posts.len());
+                            let filter_pending = feed.filter_pending;
+                            let posts: Vec<_> = feed.snapshot.posts.iter().filter(|post| {
+                                !filter_pending || post.resources.iter().any(|resource| self.query.matches_type(resource.file_type()))
+                            }).cloned().collect();
                             if posts.is_empty() {
                                 ui.add_space(24.);
-                                ui.label(if self.query.search.is_empty() {
+                                ui.label(if filter_pending {
+                                    "Updating filter…"
+                                } else if self.query.search.is_empty() {
                                     "No resources in this feed yet."
                                 } else {
                                     "No matching resources."
                                 });
-                                if ui.button("Connect an agent").clicked() {
+                                if !filter_pending && ui.button("Connect an agent").clicked() {
                                     self.show_help = true;
                                 }
                             }
                             for post in posts {
                                 self.card(ui, &post, target);
                             }
-                            if remaining > 0
+                            if !filter_pending && remaining > 0
                                 && ui
                                     .button(format!("Load more ({remaining} remaining)"))
                                     .clicked()
@@ -1338,6 +1428,42 @@ impl App {
             "discovery.configure",
             serde_json::to_value(config).unwrap_or_default(),
         ));
+    }
+    fn retention_settings(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.retention_draft else {
+            return;
+        };
+        let options = [
+            (Retention::Forever, "Forever"),
+            (Retention::Year, "1 year"),
+            (Retention::SixMonths, "6 months"),
+            (Retention::Days90, "90 days"),
+            (Retention::Days30, "30 days"),
+            (Retention::Days14, "14 days"),
+        ];
+        let mut open = true;
+        let mut apply = false;
+        egui::Window::new("Settings").open(&mut open).default_width(380.).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Keep feed history");
+                egui::ComboBox::from_id_salt("retention-policy")
+                    .selected_text(options.iter().find(|(policy, _)| *policy == draft).unwrap().1)
+                    .show_ui(ui, |ui| {
+                        for (policy, label) in options { ui.selectable_value(&mut draft, policy, label); }
+                    });
+            });
+            ui.label("Age is measured from the original post date. Pinned posts are kept.");
+            if draft != self.snapshot.retention && draft != Retention::Forever {
+                ui.label("Applying this setting permanently removes older unpinned posts from Feedr, including archived posts. Your files stay on disk.");
+            }
+            apply = ui.add_enabled(draft != self.snapshot.retention, egui::Button::new("Apply")).clicked();
+        });
+        if apply {
+            let _ = self
+                .commands
+                .send(Command::Call("retention.set", json!(draft)));
+        }
+        self.retention_draft = (open && !apply).then_some(draft);
     }
     fn discovery_settings(&mut self, ctx: &egui::Context) {
         let colors = Palette::get(ctx);
@@ -1617,7 +1743,11 @@ impl App {
                         Some(Preview::Image(_)) => {}
                         Some(Preview::Unsupported(message)) => {
                             ui.add_space(22.);
-                            ui.label(RichText::new(r.file_type()).size(30.).strong());
+                            ui.label(
+                                RichText::new(type_filters::label(r.file_type()))
+                                    .size(30.)
+                                    .strong(),
+                            );
                             ui.label(message);
                         }
                         Some(Preview::Error(message)) => {
@@ -1704,6 +1834,7 @@ impl eframe::App for App {
             self.expanded_viewer(ctx);
         } else {
             self.header(ctx);
+            self.retention_settings(ctx);
             self.discovery_settings(ctx);
             self.sidebar(ctx);
             self.detail(ctx);
@@ -1852,7 +1983,7 @@ fn load_preview(p: &Post, r: &Resource, image_size: u32) -> Preview {
             Err(error) => Preview::Error(format!("Preview unavailable: {error:#}")),
         };
     }
-    if ["Markdown", "File"].contains(&r.file_type()) {
+    if ["Markdown", "File", "Web"].contains(&r.file_type()) {
         let result = (|| -> Result<String> {
             let mut bytes = Vec::new();
             fs::File::open(path)?
@@ -2012,6 +2143,7 @@ mod tests {
             expanded_preview: false,
             expanded_zoom: 1.,
             show_help: false,
+            retention_draft: None,
             connections: false,
             show_discovery: false,
         }
@@ -2281,6 +2413,27 @@ mod tests {
         assert!(app.selected.is_none());
     }
     #[test]
+    fn local_html_supports_source_inspection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.html");
+        let html = "<!doctype html><title>Preview</title>";
+        std::fs::write(&path, html).unwrap();
+        let post = post();
+        let resource = Resource::resolve(
+            ResourceInput {
+                uri: path.to_string_lossy().into_owned(),
+                kind: None,
+            },
+            &post.context,
+        )
+        .unwrap();
+        assert!(!opens_in_sidebar(&resource));
+        assert!(
+            matches!(load_preview(&post, &resource, 320), Preview::Text(source) if source == html)
+        );
+    }
+
+    #[test]
     fn full_resolution_preserves_native_image_size_instead_of_upscaling() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("small.png");
@@ -2357,9 +2510,11 @@ mod tests {
         eframe::set_value(
             &mut storage,
             "feedr.resource_types",
-            &vec!["Image", "PDF", "Image", "removed-type"],
+            &vec!["Image", "PDF", "Web", "Image", "removed-type"],
         );
-        assert_eq!(type_filters::restore(Some(&storage)), ["Image", "PDF"]);
+        let saved_types = type_filters::restore(Some(&storage));
+        assert_eq!(saved_types, ["Image", "PDF", "Web"]);
+        assert_eq!(type_filters::label(&saved_types[2]), "HTML");
         let restored: HashMap<String, String> =
             eframe::get_value(&storage, "feedr.session_colors").unwrap();
         assert!(matches!(
@@ -2816,6 +2971,108 @@ mod tests {
                 }
             }
             assert_eq!(app.columns.newest_first, newest_first);
+        }
+    }
+
+    #[test]
+    fn herdr_focus_marks_and_reveals_only_the_matching_split_column() {
+        let mut app = app();
+        let names = ["left", "middle", "right", "closed"];
+        let sessions: Vec<Session> = names
+            .iter()
+            .map(|id| {
+                serde_json::from_value(json!({
+                    "id": id,
+                    "context": { "agent": "Codex", "label": "Shared workspace", "pane_id": id },
+                    "status": "idle", "online": true, "terminal_id": id
+                }))
+                .unwrap()
+            })
+            .collect();
+        app.snapshot.sessions = sessions.clone();
+        for id in &names[..3] {
+            app.open_feed(FeedTarget::Session((*id).into()));
+        }
+        let order = app.columns.order.clone();
+        app.columns.active = Some(FeedTarget::All);
+        app.reveal_column = None;
+        let post = post();
+        app.selected = Some(post.id.clone());
+        app.resource = 1;
+        let (tx, rx) = mpsc::channel();
+        app.events = rx;
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| style.scroll_animation = egui::style::ScrollAnimation::none());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
+        let render = |app: &mut App| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.sidebar(ctx);
+                    app.feed(ctx);
+                },
+            )
+        };
+        let rect = |id| ctx.data(|d| d.get_temp::<egui::Rect>(id).unwrap());
+        let last_column = egui::Id::new(("feed-column-rect", FeedTarget::Session("right".into())));
+        let _ = render(&mut app);
+        assert!(rect(last_column).left() > screen.right());
+
+        for id in [Some("right"), Some("left"), Some("closed"), None] {
+            tx.send(Event::Snapshot(
+                FeedTarget::All,
+                Feed::default().query(&app.query, &FeedTarget::All),
+                Box::new(Snapshot {
+                    sessions: sessions.clone(),
+                    posts: vec![post.clone()],
+                    herdr_focused_session: id.map(str::to_owned),
+                    ..Default::default()
+                }),
+            ))
+            .unwrap();
+            app.receive();
+            // The scroll area commits a new offset after laying out its content.
+            let _ = render(&mut app);
+            let _ = render(&mut app);
+            let output = render(&mut app);
+            let marks: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle)
+                        if circle.radius == 2.5 && circle.fill == Palette::get(&ctx).accent =>
+                    {
+                        Some(circle.center)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(id) = id {
+                assert!(marks.iter().any(|point| rect(egui::Id::new(("session-row-rect", id))).contains(*point)));
+                if id == "closed" {
+                    assert_eq!(marks.len(), 1);
+                } else {
+                    let header = rect(egui::Id::new((
+                        "feed-column-rect",
+                        FeedTarget::Session(id.into()),
+                    )));
+                    assert!(
+                        screen.contains_rect(header),
+                        "focused column {id} must be visible: {header:?} within {screen:?}"
+                    );
+                    assert!(marks.iter().any(|point| header.contains(*point)));
+                    assert_eq!(marks.len(), 2);
+                }
+            } else {
+                assert!(marks.is_empty());
+            }
+            assert_eq!(app.columns.order, order);
+            assert_eq!(app.columns.active, Some(FeedTarget::All));
+            assert_eq!(app.selected.as_deref(), Some(post.id.as_str()));
+            assert_eq!(app.resource, 1);
         }
     }
 

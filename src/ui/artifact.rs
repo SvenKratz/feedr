@@ -1,5 +1,5 @@
 //! Resource surfaces are the primary click targets in the feed.
-use super::{Palette, Preview, age, load_preview, opens_in_sidebar, resource_text};
+use super::{Palette, Preview, age, load_preview, opens_in_sidebar, resource_text, type_filters};
 use crate::model::{Post, Resource, ResourceKind};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -187,7 +187,7 @@ impl Artifacts {
                 if inline {
                     format!("Open {} in sidebar", r.name)
                 } else {
-                    format!("Open {} ({})", r.name, r.file_type())
+                    format!("Open {} ({})", r.name, type_filters::label(r.file_type()))
                 },
             )
         });
@@ -373,7 +373,7 @@ fn resource_caption(ui: &egui::Ui, resource: &Resource, width: f32) -> String {
         .parent()
         .and_then(|p| p.to_str())
         .unwrap_or(&resource.target);
-    let prefix = format!("{} · ", resource.file_type());
+    let prefix = format!("{} · ", type_filters::label(resource.file_type()));
     let location = resource_text::tail(
         ui,
         location,

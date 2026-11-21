@@ -50,6 +50,65 @@ fn published_media_types_match_discovery_and_respect_resource_kinds() {
 }
 
 #[test]
+fn html_filter_finds_previous_local_pages_and_web_links() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("db");
+    let mut store = Store::open(&db).unwrap();
+    let link = "https://example.test/preview";
+    for uri in [
+        "dashboard.html",
+        "help.HTM",
+        "pending.html",
+        "style.css",
+        link,
+    ] {
+        if matches!(uri, "dashboard.html" | "help.HTM" | "style.css") {
+            std::fs::write(dir.path().join(uri), "fixture").unwrap();
+        }
+        let mut input = post(dir.path());
+        input.title = uri.into();
+        input.idempotency_key = Some(uri.into());
+        input.resources[0].uri = uri.into();
+        store.post(input).unwrap();
+    }
+    drop(store);
+    let legacy = rusqlite::Connection::open(&db).unwrap();
+    legacy.execute_batch("UPDATE state SET value=2 WHERE key='resource_types_version'; UPDATE posts SET types='|File|' WHERE title IN ('dashboard.html','help.HTM','pending.html');").unwrap();
+    drop(legacy);
+
+    let store = Store::open(&db).unwrap();
+    let titles = |query| {
+        let snapshot = store.snapshot(&query).unwrap();
+        assert_eq!(snapshot.total, snapshot.posts.len());
+        let mut titles: Vec<_> = snapshot.posts.into_iter().map(|p| p.title).collect();
+        titles.sort();
+        titles
+    };
+    assert_eq!(
+        titles(FeedQuery {
+            kinds: vec!["HTML".into()],
+            available_only: true,
+            ..Default::default()
+        }),
+        ["dashboard.html", "help.HTM", link],
+    );
+    assert_eq!(
+        titles(FeedQuery {
+            kind: Some("Web".into()),
+            ..Default::default()
+        }),
+        ["dashboard.html", "help.HTM", link, "pending.html"],
+    );
+    assert_eq!(
+        titles(FeedQuery {
+            kinds: vec!["File".into()],
+            ..Default::default()
+        }),
+        ["style.css"],
+    );
+}
+
+#[test]
 fn older_media_type_indexes_are_backfilled_without_changing_history() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("db");

@@ -225,6 +225,7 @@ impl Resource {
             "md" | "markdown" => "Markdown",
             "png" | "jpg" | "jpeg" | "gif" | "webp" => "Image",
             "pdf" => "PDF",
+            "html" | "htm" => "Web",
             "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v" | "mpg" | "mpeg" | "ogv" => "Video",
             "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "aif" | "aiff"
             | "alac" | "wma" => "Audio",
@@ -322,7 +323,7 @@ pub struct FeedQuery {
     pub session_id: Option<String>,
     /// Legacy single-type filter. Combined with kinds when both are supplied.
     pub kind: Option<String>,
-    /// Include any of these resource types, e.g. ["Image", "PDF"].
+    /// Include any of these resource types, e.g. ["Image", "PDF", "HTML"].
     /// An empty list and no kind include every type.
     pub kinds: Vec<String>,
     pub pinned_only: bool,
@@ -338,19 +339,46 @@ impl FeedQuery {
             .as_deref()
             .into_iter()
             .chain(self.kinds.iter().map(String::as_str))
+            // Keep Web as the stored filter key for older clients and settings.
+            .map(|kind| if kind == "HTML" { "Web" } else { kind })
     }
 
     pub fn matches_type(&self, kind: &str) -> bool {
         let mut types = self.selected_types().peekable();
         types.peek().is_none() || types.any(|selected| selected == kind)
     }
+
+    pub(crate) fn page_limit(&self) -> usize {
+        if self.limit == 0 {
+            200
+        } else {
+            self.limit.clamp(1, 2000)
+        }
+    }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Retention {
+    #[default]
+    Forever,
+    Year,
+    SixMonths,
+    Days90,
+    Days30,
+    Days14,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
     pub discovery: crate::discovery::Config,
     #[serde(default)]
     pub discovery_error: Option<String>,
+    #[serde(default)]
+    pub herdr_focused_session: Option<String>,
+    #[serde(default)]
+    pub retention: Retention,
     pub sequence: i64,
     pub posts: Vec<Post>,
     pub sessions: Vec<Session>,

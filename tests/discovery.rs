@@ -99,6 +99,9 @@ fn discovery_types_distinguish_markdown_plain_text_code_and_audio() {
         ("./music.M4A", FileType::Audio),
         ("./speech.opus", FileType::Audio),
         ("./report.pdf", FileType::Pdf),
+        ("./preview.HTML", FileType::Web),
+        ("./guide.htm", FileType::Web),
+        ("./style.css", FileType::Code),
         ("https://example.test/report.md", FileType::Web),
         ("./archive.zip", FileType::Other),
     ] {
@@ -122,6 +125,50 @@ fn discovery_types_distinguish_markdown_plain_text_code_and_audio() {
     scoped.set_all_sessions(true);
     assert!(scoped.includes("one") && scoped.includes("two") && scoped.includes("future-session"));
 }
+
+#[test]
+fn html_discovery_preference_includes_old_and_new_local_pages() {
+    let dir = tempdir().unwrap();
+    let (mut store, session) = setup(dir.path());
+    enable(&mut store);
+    let result = store
+        .ingest(&input(&session, "Ready: index.HTML and main.rs"))
+        .unwrap();
+    assert_eq!(result.created.len(), 2);
+    store
+        .set_discovery_config(&Config {
+            enabled: true,
+            file_types: vec![FileType::Web],
+            ..Config::default()
+        })
+        .unwrap();
+    drop(store);
+
+    let db = dir.path().join("feed.sqlite3");
+    let legacy = rusqlite::Connection::open(&db).unwrap();
+    legacy.execute_batch("UPDATE state SET value=2 WHERE key='resource_types_version'; UPDATE posts SET types='|File|', discovery_type='code' WHERE title='index.HTML';").unwrap();
+    drop(legacy);
+    let mut store = Store::open(&db).unwrap();
+    let posts = store
+        .snapshot(&FeedQuery {
+            kinds: vec!["HTML".into()],
+            ..Default::default()
+        })
+        .unwrap()
+        .posts;
+    assert_eq!(posts.len(), 1);
+    let original = &posts[0];
+    assert_eq!(original.title, "index.HTML");
+    assert!(result.created.contains(&original.id));
+    assert_eq!(original.revision, 1);
+
+    let result = store
+        .ingest(&input(&session, "Ready: guide.htm and style.css"))
+        .unwrap();
+    assert_eq!(result.created.len(), 1);
+    assert_eq!(store.get(&result.created[0]).unwrap().title, "guide.htm");
+}
+
 #[test]
 fn markdown_discovery_is_not_crowded_out_by_excluded_code_mentions() {
     let dir = tempdir().unwrap();

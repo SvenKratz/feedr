@@ -21,6 +21,8 @@ struct Source {
     silent: bool,
     snapshot_reads: usize,
     wait_after: Vec<i64>,
+    hold_wait: bool,
+    wait_replies: usize,
     publish_during_snapshot: Option<PostInput>,
 }
 
@@ -52,6 +54,8 @@ impl Live {
                 silent: false,
                 snapshot_reads: 0,
                 wait_after: Vec::new(),
+                hold_wait: false,
+                wait_replies: 0,
                 publish_during_snapshot: None,
             }),
             Condvar::new(),
@@ -74,6 +78,7 @@ impl Live {
                       let mut state = shared.0.lock().unwrap();
                       (|| {
                         match request["method"].as_str().unwrap() {
+                            "desktop.snapshot" => anyhow::bail!("Unknown method desktop.snapshot"),
                             "snapshot" => {
                                 state.snapshot_reads += 1;
                                 if std::mem::take(&mut state.fail_snapshot) {
@@ -89,8 +94,13 @@ impl Live {
                                 if std::mem::take(&mut state.fail_wait) { anyhow::bail!("Synthetic reconnect"); }
                                 let after = request["params"]["after"].as_i64().unwrap();
                                 state.wait_after.push(after);
-                                let (guard, _) = shared.1.wait_timeout_while(state, Duration::from_millis(200), |s| s.silent || s.store.sequence().unwrap() <= after).unwrap();
+                                let hold = state.hold_wait;
+                                let timeout = if hold { Duration::from_secs(3) } else { Duration::from_millis(200) };
+                                let (guard, _) = shared.1.wait_timeout_while(state, timeout, |s| {
+                                    if hold { s.hold_wait } else { s.silent || s.store.sequence().unwrap() <= after }
+                                }).unwrap();
                                 state = guard;
+                                state.wait_replies += 1;
                                 Ok(json!({"sequence": if state.silent { after } else { state.store.sequence()? }}))
                             }
                             "ping" => Ok(json!({})),
@@ -160,7 +170,7 @@ impl Live {
     fn start(&mut self) {
         let (commands, rx) = mpsc::channel();
         let (tx, events) = mpsc::channel();
-        self.app.commands = commands;
+        self.app.commands = commands.clone();
         self.app.events = events;
         let queries = self
             .app
@@ -171,7 +181,7 @@ impl Live {
             .collect();
         let (client, stop, ctx) = (self.client.clone(), self.app.stop.clone(), self.ctx.clone());
         self.worker = Some(thread::spawn(move || {
-            live::run(client, queries, rx, tx, stop, ctx)
+            live::run(client, queries, commands, rx, tx, stop, ctx)
         }));
     }
     fn until(&mut self, check: impl Fn(&App) -> bool) {
@@ -252,6 +262,34 @@ impl Drop for Live {
 
 fn contains(app: &App, target: &FeedTarget, id: &str) -> bool {
     app.feeds[target].snapshot.posts.iter().any(|p| p.id == id)
+}
+
+#[test]
+fn a_filter_click_fetches_while_the_change_subscription_is_blocked() {
+    let mut live = Live::new();
+    let image = live.publish("image.png", "agent");
+    let report = live.publish("report.md", "agent");
+    live.change(|s| s.hold_wait = true);
+    live.start();
+    let source = live.source.clone();
+    live.until(|app| {
+        contains(app, &FeedTarget::All, &report.id)
+            && !source.0.lock().unwrap().wait_after.is_empty()
+    });
+    live.click_type("Image");
+    assert!(contains(&live.app, &FeedTarget::All, &image.id));
+    assert!(live.app.feeds[&FeedTarget::All].filter_pending);
+    live.until(|app| {
+        !app.feeds[&FeedTarget::All].filter_pending && !contains(app, &FeedTarget::All, &report.id)
+    });
+    let replies = live.change(|s| {
+        s.hold_wait = false;
+        s.wait_replies
+    });
+    assert_eq!(
+        replies, 0,
+        "the filter fetch waited for the change subscription"
+    );
 }
 
 #[test]

@@ -93,11 +93,11 @@ pub fn candidates(message: &str, context: &Context) -> Vec<Resource> {
                 FileType::Code => false,
                 FileType::Markdown
                 | FileType::Text
+                | FileType::Web
                 | FileType::Folder
                 | FileType::App
                 | FileType::Other => ready && !resource.target.ends_with(".log"),
                 FileType::Image | FileType::Video | FileType::Audio | FileType::Pdf => true,
-                FileType::Web => false,
             }
         })
         .take(8)

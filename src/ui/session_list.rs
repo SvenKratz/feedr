@@ -98,6 +98,7 @@ pub(super) fn row(
     session: &Session,
     color: SessionColor,
     selected: bool,
+    herdr_focused: bool,
     current: i64,
 ) -> egui::Response {
     let colors = Palette::get(ui.ctx());
@@ -108,7 +109,7 @@ pub(super) fn row(
         egui::Sense::click(),
     );
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    let fill = if selected {
+    let fill = if selected || herdr_focused {
         swatch.highlighted()
     } else if response.hovered() {
         sidebar_fill
@@ -116,11 +117,18 @@ pub(super) fn row(
         sidebar_fill.lerp_to_gamma(colors.panel, 0.72)
     };
     painter.rect_filled(rect, 3., fill);
-    if selected || response.has_focus() {
+    if selected || response.has_focus() || herdr_focused {
         painter.rect_stroke(
             rect.shrink(0.5),
             3.,
-            egui::Stroke::new(1.0_f32, swatch.accent),
+            egui::Stroke::new(
+                1.0_f32,
+                if herdr_focused {
+                    colors.accent
+                } else {
+                    swatch.accent
+                },
+            ),
             egui::StrokeKind::Inside,
         );
         painter.rect_filled(
@@ -184,6 +192,12 @@ pub(super) fn row(
     }
     let left = rect.left() + 25.;
     let right = rect.right() - 6.;
+    let title_right = if herdr_focused {
+        painter.circle_filled(egui::pos2(right - 4., center.y), 2.5, colors.accent);
+        right - 13.
+    } else {
+        right
+    };
     let title = egui::WidgetText::from(
         RichText::new(
             name(session)
@@ -198,7 +212,7 @@ pub(super) fn row(
     .into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
-        (right - left).max(0.),
+        (title_right - left).max(0.),
         egui::TextStyle::Body,
     );
     painter.galley(egui::pos2(left, rect.top() + 2.), title, colors.ink);
@@ -228,11 +242,16 @@ pub(super) fn row(
             egui::WidgetType::Button,
             ui.is_enabled(),
             format!(
-                "{}: {} ({}) · {}",
+                "{}: {} ({}) · {}{}",
                 status_label(session),
                 name(session),
                 agent(session),
-                age
+                age,
+                if herdr_focused {
+                    " · Focused in herdr"
+                } else {
+                    ""
+                },
             ),
         )
     });
@@ -391,6 +410,7 @@ mod tests {
                             ui,
                             &item,
                             super::super::session_color::PALETTE[0],
+                            false,
                             false,
                             180_000,
                         )

@@ -7,6 +7,7 @@ import pathlib
 import selectors
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,38 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
         assert broker_call("snapshot", query)["total"] == 1, "Legacy single-type query changed"
         print("PASS: combined Image/PDF filters over MCP and broker IPC preserve legacy single-type queries")
 
+        columns = [{"session_id": None, "limit": 1}, {"session_id": session, "limit": 10}]
+        filters = {"kinds": ["Image", "PDF"], "available_only": True}
+        batch = broker_call("desktop.snapshot", {"filters": filters, "columns": columns})
+        for column, page in zip(columns, batch["pages"], strict=True):
+            legacy = broker_call("snapshot", {**column, **filters})
+            assert (page["total"], page["unread"]) == (legacy["total"], legacy["unread"])
+            assert [batch["snapshot"]["posts"][index] for index in page["posts"]] == legacy["posts"]
+        assert len({p["id"] for p in batch["snapshot"]["posts"]}) == len(batch["snapshot"]["posts"])
+
+        image_columns = {"filters": query, "columns": columns}
+        initial = broker_call("desktop.snapshot", image_columns)
+        image_path.unlink()
+        deadline = time.monotonic() + 8
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            notification = pool.submit(broker_call, "wait", {
+                "after": initial["snapshot"]["sequence"],
+                "desktop_after": initial["generation"], "timeout_ms": 4000,
+            })
+            while True:
+                batch = broker_call("desktop.snapshot", image_columns)
+                if batch["generation"] != initial["generation"] and all(page["total"] == 0 for page in batch["pages"]):
+                    break
+                assert time.monotonic() < deadline, "Removed image was still in the desktop index"
+                time.sleep(0.1)
+            assert notification.result(timeout=5)["desktop_generation"] >= initial["generation"]
+        image_path.write_bytes(image_bytes)
+        deadline = time.monotonic() + 8
+        while not all(page["total"] == 1 for page in broker_call("desktop.snapshot", image_columns)["pages"]):
+            assert time.monotonic() < deadline, "Recreated image did not return to both columns"
+            time.sleep(0.1)
+        print("PASS: one desktop batch matches independent column results and tracks file changes")
+
         late_path = pathlib.Path(root, "late-image.png")
         result = rpc({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"feedr_update","arguments":{
             "id":image_post["id"], "expected_revision":image_post["revision"],
@@ -235,6 +268,47 @@ with tempfile.TemporaryDirectory(prefix="feedr-smoke-") as root:
         broker = launch_broker()
         assert cli("get", one["id"])["pinned"]
         assert broker_call("snapshot", query)["posts"][0]["id"] == image_post["id"]
+
+        # Age only synthetic posts. Exercise policy changes and scheduled work
+        # at broker startup while keeping attachment files and pinned history.
+        expired_file = pathlib.Path(root, "expired.md")
+        expired_file.write_text("# Retention fixture\n")
+        expired = cli("post", "--title", "Old retention fixture", "--idempotency-key", "retention-fixture", str(expired_file))
+        assert broker_call("snapshot", {"limit": 1})["retention"] == "forever"
+        db_path = pathlib.Path(root, "feedr.sqlite3")
+        old_date = int(time.time() * 1000) - 20 * 24 * 60 * 60 * 1000
+
+        def mark_old(*posts):
+            with sqlite3.connect(db_path) as database:
+                database.executemany(
+                    "UPDATE posts SET created_at=?, json=json_set(json,'$.created_at',?) WHERE id=?",
+                    ((old_date, old_date, item["id"]) for item in posts),
+                )
+
+        stop(broker)
+        mark_old(expired, dismissed, one)
+        broker = launch_broker()
+        assert cli("get", expired["id"])["id"] == expired["id"]
+        archived_pages = {"filters": {"archived": True}, "columns": columns}
+        before = broker_call("desktop.snapshot", archived_pages)
+        assert dismissed["id"] in {post["id"] for post in before["snapshot"]["posts"]}
+        assert broker_call("retention.set", "days14") == {"retention": "days14", "deleted": 2}
+        after = broker_call("desktop.snapshot", archived_pages)
+        assert after["generation"] > before["generation"]
+        assert dismissed["id"] not in {post["id"] for post in after["snapshot"]["posts"]}
+        for item in (expired, dismissed):
+            assert "Post not found" in cli("get", item["id"], expect_ok=False)
+        with sqlite3.connect(db_path) as database:
+            assert database.execute("SELECT count(*) FROM post_keys WHERE post_id=?", [expired["id"]]).fetchone()[0] == 0
+            assert database.execute("SELECT count(*) FROM discovery_mentions WHERE post_id=?", [dismissed["id"]]).fetchone()[0] == 0
+        stop(broker)
+        mark_old(pdf_post)
+        broker = launch_broker()
+        assert broker_call("snapshot", {"limit": 1})["retention"] == "days14"
+        assert "Post not found" in cli("get", pdf_post["id"], expect_ok=False)
+        assert cli("get", one["id"])["pinned"]
+        assert expired_file.is_file() and mention_file.is_file() and pdf_path.is_file()
+        print("PASS: retention is opt-in, persists, prunes at startup and preserves pinned cards and files")
         print("PASS: live MCP image notifications, catchall/session filters, late attachments, removal/recreation, watched image readiness and restart")
         print("PASS: opt-in discovery, durable deduplication/dismissal, session binding and partial JSONL tailing")
         print("PASS: graceful service shutdown preserves acknowledged posts across restart")

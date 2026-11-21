@@ -396,7 +396,9 @@ mod tests {
             Mutex::new(State {
                 store,
                 connections: HashMap::new(),
+                herdr_focus: None,
                 discovery_error: None,
+                desktop: Default::default(),
             }),
             Condvar::new(),
         ));

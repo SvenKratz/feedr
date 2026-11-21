@@ -3,6 +3,11 @@ use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{collections::HashMap, path::Path};
 
+pub(crate) mod desktop;
+mod retention;
+
+const RESOURCE_TYPES_VERSION: i64 = 3;
+
 pub struct Store {
     pub(crate) db: Connection,
 }
@@ -22,6 +27,7 @@ impl Store {
         CREATE INDEX IF NOT EXISTS posts_session ON posts(session_id,created_at DESC);
         CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
         INSERT OR IGNORE INTO state VALUES('sequence',0);
+        INSERT OR IGNORE INTO state VALUES('post_sequence',0);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS discovery_mentions(key TEXT PRIMARY KEY,post_id TEXT NOT NULL REFERENCES posts(id),source TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS post_keys(key TEXT PRIMARY KEY,post_id TEXT NOT NULL REFERENCES posts(id));
@@ -34,8 +40,16 @@ impl Store {
         if !has_types {
             db.execute_batch("ALTER TABLE posts ADD COLUMN types TEXT NOT NULL DEFAULT ''; ")?;
         }
+        let has_discovery_type: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('posts') WHERE name='discovery_type')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_discovery_type {
+            db.execute_batch("ALTER TABLE posts ADD COLUMN discovery_type TEXT;")?;
+        }
         // Classification can expand without changing post JSON or the schema.
-        // Rebuild the derived filter cache once for older installations; keep
+        // Rebuild the feed and discovery filter caches together, keeping
         // user_version compatible so an updater rollback can still read history.
         let types_version: Option<i64> = db
             .query_row(
@@ -44,7 +58,11 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
-        if !has_types || types_version.unwrap_or_default() < 2 {
+        if !has_types
+            || !has_discovery_type
+            || version < 4
+            || types_version.unwrap_or_default() < RESOURCE_TYPES_VERSION
+        {
             let tx = db.transaction()?;
             let rows: Vec<(String, String)> = tx
                 .prepare("SELECT id,json FROM posts")?
@@ -54,36 +72,15 @@ impl Store {
             for (id, json) in rows {
                 let p: Post = serde_json::from_str(&json)?;
                 changed += tx.execute(
-                    "UPDATE posts SET types=?1 WHERE id=?2 AND types!=?1",
-                    params![Self::types(&p), id],
+                    "UPDATE posts SET types=?1,discovery_type=?2 WHERE id=?3 AND (types!=?1 OR discovery_type IS NOT ?2)",
+                    params![Self::types(&p), Self::discovery_type(&p), id],
                 )?;
             }
-            tx.execute("INSERT INTO state VALUES('resource_types_version',2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+            tx.execute("INSERT INTO state VALUES('resource_types_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [RESOURCE_TYPES_VERSION])?;
             if changed > 0 {
                 Self::bump(&tx)?;
             }
             tx.commit()?;
-        }
-        let has_discovery_type: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('posts') WHERE name='discovery_type')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !has_discovery_type {
-            db.execute_batch("ALTER TABLE posts ADD COLUMN discovery_type TEXT;")?;
-        }
-        if version < 4 || !has_discovery_type {
-            let rows: Vec<(String, String)> = db
-                .prepare("SELECT id,json FROM posts")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<std::result::Result<_, _>>()?;
-            for (id, json) in rows {
-                let post: Post = serde_json::from_str(&json)?;
-                db.execute(
-                    "UPDATE posts SET discovery_type=?1 WHERE id=?2",
-                    params![Self::discovery_type(&post), id],
-                )?;
-            }
         }
         db.pragma_update(None, "user_version", 4)?;
         // A previous broker may have stopped without a disconnect event.
@@ -108,6 +105,20 @@ impl Store {
     }
     pub(crate) fn bump(db: &Connection) -> Result<()> {
         db.execute("UPDATE state SET value=value+1 WHERE key='sequence'", [])?;
+        Ok(())
+    }
+    pub(crate) fn post_sequence(db: &Connection) -> Result<i64> {
+        Ok(db.query_row(
+            "SELECT value FROM state WHERE key='post_sequence'",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+    fn bump_posts(db: &Connection) -> Result<()> {
+        db.execute(
+            "UPDATE state SET value=value+1 WHERE key='post_sequence'",
+            [],
+        )?;
         Ok(())
     }
     pub fn sessions(&self) -> Result<Vec<Session>> {
@@ -297,7 +308,7 @@ impl Store {
         )
         .to_lowercase();
         db.execute("INSERT INTO posts(id,session_id,title,searchable,json,created_at,pinned,archived,unread,idem,types,discovery_type) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET title=excluded.title,searchable=excluded.searchable,json=excluded.json,pinned=excluded.pinned,archived=excluded.archived,unread=excluded.unread,types=excluded.types,discovery_type=excluded.discovery_type",params![p.id,p.session_id,p.title,searchable,serde_json::to_string(p)?,p.created_at,p.pinned,p.archived,!p.read,idem,Self::types(p),Self::discovery_type(p)])?;
-        Ok(())
+        Self::bump_posts(db)
     }
     pub fn get(&self, id: &str) -> Result<Post> {
         let json: String = self
@@ -382,11 +393,7 @@ impl Store {
             .map(|resource| crate::discovery::FileType::of(resource).key())
     }
     pub fn snapshot(&self, q: &FeedQuery) -> Result<Snapshot> {
-        let limit = if q.limit == 0 {
-            200
-        } else {
-            q.limit.clamp(1, 2000)
-        };
+        let limit = q.page_limit();
         let discovery = self.discovery_config()?;
         let allowed = discovery.type_filter();
         let selected_types: Vec<_> = q.selected_types().collect();
@@ -474,14 +481,23 @@ impl Store {
             posts.push(post);
         }
         Ok(Snapshot {
-            discovery,
-            discovery_error: None,
-            sequence: self.sequence()?,
             posts,
-            sessions: self.sessions()?,
             total,
             unread,
-            connections: vec![],
+            ..self.snapshot_metadata(discovery)?
+        })
+    }
+
+    pub(crate) fn snapshot_metadata(
+        &self,
+        discovery: crate::discovery::Config,
+    ) -> Result<Snapshot> {
+        Ok(Snapshot {
+            sequence: self.sequence()?,
+            sessions: self.sessions()?,
+            retention: self.retention()?,
+            discovery,
+            ..Snapshot::default()
         })
     }
     pub fn reconcile(&mut self, socket: &str, incoming: Vec<Session>) -> Result<()> {
